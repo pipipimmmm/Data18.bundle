@@ -466,9 +466,9 @@ def search_fixed(results, test, lang = None):
 # Searching / Utilities:
 # ==============================================================================
 
-def make_result(_id, _name, _score, _lang, _thumb = None):
-    return MetadataSearchResult(id = _id, name = _name, score = _score,
-                                lang = _lang, thumb = _thumb)
+def make_result(id, name, score, lang, thumb = None):
+    return MetadataSearchResult(id = id, name = _name, score = score,
+                                lang = lang, thumb = thumb)
 
 def compute_score(compare, title, date):
     # Compute 
