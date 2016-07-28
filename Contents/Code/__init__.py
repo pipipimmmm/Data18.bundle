@@ -951,24 +951,26 @@ def media_proxy(img):
     else:
         return Proxy.Media(content,   sort_order = img.sort_order)
 
-@parallelize
-def download_images(metadata, images):
-    for img in images:
-        @task
-        def downloader(metadata = metadata, img = img):
-            Log("Downloading image: %s" % str(img))
+def download_images(metadata, images)
+    @parallelize
+    def download_all(metadata = metadata, images = images):
+        for img in images:
+            @task
+            def download_one(metadata = metadata, img = img):
+                Log("Downloading image: %s" % str(img))
 
-            typ = img.type
-            url = img.url
+                typ = img.type
+                url = img.url
 
-            if   typ == 'art':
-                metadata.art[url]     = media_proxy(img)
-            elif typ == 'poster':
-                metadata.posters[url] = media_proxy(img)
-            elif typ == 'banner':
-                metadata.banners[url] = media_proxy(img)
+                if   typ == 'art':
+                    metadata.art[url]     = media_proxy(img)
+                elif typ == 'poster':
+                    metadata.posters[url] = media_proxy(img)
+                elif typ == 'banner':
+                    metadata.banners[url] = media_proxy(img)
 
-        if DEV: downloader(metadata, img)
+            if DEV: downloader(metadata, img)
+    if DEV: download_all(metadata, images)
 
 def fetch_poster_main(images, sort_order, referer, html):
     if sort_order >= IMAGE_MAX: return sort_order
