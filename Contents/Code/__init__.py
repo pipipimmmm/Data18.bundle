@@ -1,855 +1,1273 @@
 # -*- coding: utf-8 -*-
 
-# Data18
-import re, types, traceback, math, calendar, datetime, urllib
-import Queue
-from lxml.etree import tostring
-from functools import partial
+import random
+import re, math
+import urllib
+import traceback
+import datetime
+from collections import namedtuple
+from functools import reduce, partial
 
-VERSION_NO = '1.2015.03.28.3'
+VERSION_NO    = '1.2016.07.24.1'
 
-# URLS
-D18_BASE_URL = 'http://www.data18.com/'
-D18_ID_URL = {'movie': D18_BASE_URL + 'movies/%s', 'content': D18_BASE_URL + 'content/%s'}
-D18_SEARCH_URL = D18_BASE_URL + 'search/?k=%s&t=0'
-D18_CONNECTIONS_URL = D18_BASE_URL + 'connections/?v1=%s&v2=%s'
-D18_CONNECTIONS_LIMIT = 5
-D18_STAR_PHOTO = D18_BASE_URL + 'img/stars/120/%s.jpg'
+DEV           = True # Set to false on a real Plex Media Server.
+if DEV: from dev import *
 
-# Other stuff:
-MODES = ['content', 'movie', 'scene']
+REQUEST_DELAY = 0 # Delay used when requesting HTML
+CACHE_TIME    = CACHE_1DAY
+USER_AGENT    = ''.join(['Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.2; ',
+                         'Trident/4.0; SLCC2; .NET CLR 2.0.50727; ',
+                         '.NET CLR 3.5.30729; .NET CLR 3.0.30729; ',
+                         'Media Center PC 6.0)'])
+
+if not DEV:
+    def request_html(url):
+        return HTML.ElementFromURL(
+                url, sleep = REQUEST_DELAY, cacheTime = CACHE_TIME,
+                headers = {'Accept-Encoding':'gzip'})
+
+INIT_SCORE   = 100    # Starting value for score before deductions are taken.
+GOOD_SCORE   = 98     # Score required to short-circuit matching and stop searching.
+MORE_SCORE   = 66     # Pull more info for movies >= this score.
+IGNORE_SCORE = 45     # Any score lower than this will be ignored.
+DATE_SCORE_BASE = 2/3 * math.e  # The power to raise the date (year) difference to.
+SCENE_SCORE_ADD = 10  # Score to add for a correct scene number.
+SCENE_SCORE_ACTOR_ADD = 5 # Score to add for a correct actor in scene.
+
 REPLACEMENTS = {':': [u"\uff1a", u"\uA789"], '-': [u"\u2014"], '.': [u"\uFE52"]}
 
-REQUEST_DELAY = 0       # Delay used when requesting HTML, may be good to have to prevent being banned from the site
+D18_MODE_STRINGS = ['content', 'movies', 'scenes']
 
-INITIAL_SCORE = 100     # Starting value for score before deductions are taken.
-GOOD_SCORE = 98         # Score required to short-circuit matching and stop searching.
-IGNORE_SCORE = 45       # Any score lower than this will be ignored.
+# Let's be super fault tolerant in accepted input:
+D18_FIXED_SEARCH = re.compile(
+    r'(?:http\:\/\/)?(?:www\.)?(?:data18)?(?:\.com)?\/?' +
+    r'(content|movies?|scenes?)/(\d+)(?:/(\d+))?', flags = re.I)
 
-THREAD_MAX = 20
+D18_BASE_URL     = 'http://www.data18.com/'
+D18_MOVIE_INFO   = D18_BASE_URL + 'movies/%s'
+D18_CONTENT_INFO = D18_BASE_URL + 'content/%s'
+D18_MODE_URL     = [D18_CONTENT_INFO, D18_MOVIE_INFO, D18_CONTENT_INFO]
 
-def make_slug(self, name):
-    s = '-'.join(x.lower() for x in re.split('\s+', name, 0, re.I))
-    self.Log('slug: %s' % s)
-    return s
+D18_SEARCH_URL        = D18_BASE_URL + 'search/?k=%s&t=0'
+D18_CONNECTIONS_URL   = D18_BASE_URL + 'connections/?v1=%s&v2=%s'
+D18_CONNECTIONS_LIMIT = 5
 
-def join_slug(parts):
-    return '-'.join(parts)
+D18_PHOTOSET_REF = D18_BASE_URL + 'viewer/%s/01'
 
-def sluggify_name(self, name):
-    return make_slug(self, re.sub(r"[\W\_]+", ' ', name, 0, re.I))
+IMAGE_PROXY_URL = Prefs['imageproxyurl']
+IMAGE_MAX       = int(Prefs['sceneimg']  or 10)
 
-def url_root_title(self, url, rootPath, titlePath):
-    self.Log("url: %s" % url)
-    root = self.requestHTML(url).xpath(rootPath)[0]
-    title = root.xpath(titlePath)[0].strip()
-    return (url, root, title)
+REGEX   = {
+    'CONN': re.compile(r"\s+in\s+", flags = re.I),
+}
 
-def make_result(key, slug, title, thumb, lang):
-    return [MetadataSearchResult(id = '%s$%s' % (join_slug(key), slug), name = title, score = 100, thumb = thumb, lang = lang)]
+class MemoizeDict():
+    def __init__(self, memoizer, initials):
+        self.initials = initials
+        self.memoized = {}
+        self.memoizer = memoizer
 
-def site_search(self, cb_urt, key, name, lang, thumbPath):
+    def __getattr__(self, attr):
+        if attr in self.initials:
+            init = self.initials.pop(attr)
+            init = self.memoizer(init)
+            self.memoized[attr] = init
+
+        return self.memoized[attr]
+
+RE = MemoizeDict(lambda rx: re.compile(rx, flags = re.I), {
+    'CONN': r"\s+in\s+",
+})
+
+XPATHS2 = {
+    # Searching:
+    'SEARCH_CONTENT':  '//div[div/p/a/img[@class="yborder"]]',
+    'SEARCH_MOVIE':    '//div[a/img[@class="yborder"]]',
+    'SEARCH_SCENES':   '//div[p/span[@class="gen"]/b[contains(text(), "Scene %s")]]',
+    'SCENES_STARRING': '//p[contains(text(), "Starring")]//a/text()',
+    'SEARCH_CONNS':    '//div/div/div[p[contains(text(), "Results:")]]/span[position() <= %s]/a/@href' % D18_CONNECTIONS_LIMIT,
+    'SCENE_MOVIE_FIX': '//div[following-sibling::div[p[contains(text(), "Related Movie")]]]//a',
+
+    # Collection:
+    'NETWORK': '//a[contains(@href,"http://www.data18.com/sites/") and following-sibling::i[position()=1][text()="Network"]]',
+    'SITE':    '//a[contains(@href,"http://www.data18.com/sites/") and following-sibling::i[position()=1][text()="Site"]]',
+    'STUDIO':  '//a[contains(@href,"http://www.data18.com/studios/") and following-sibling::i[position()=1][text()="Studio"]]',
+    'SERIE':   '//a[contains(@href,"/series/") and preceding-sibling::b[contains(text(), "Serie")]]',
+
+    # Summary:
+    'SUMMARY': '//*[b[contains(text(),"%s:")]]',
+
+    # People:
+    'DIRECTOR':       '//p[b[contains(text(),"Director:")]]/a[2]/text()',
+    'ACTOR_MOVIE':    '//div[p/span[contains(text(), "Cast of")]]//img[@class="yborder"]',
+    'ACTOR_CONTENT':  '//div[p/b[contains(text(), "Who\'s Who")]]//ul/li/a/img[@class="yborder"]',
+    'ACTOR_DEV':      '//div[p/b[contains(text(), "Who\'s Who")]]//p[b[contains(text(), "Dev")]]/a/text()',
+    'ACTOR_FALLBACK': '//p[b[contains(text(), "Starring")]]/a/text()',
+
+    # Genre:
+    'GENRE_CONTENT':  '//div[b[contains(text(),"Categories")]]/div/a/text()',
+    'GENRE_MOVIE':    '//p[b[contains(text(),"Categories")]]/a/text()',
+
+    # Duration:
+    'DURATION':       '//p[b[contains(text(), "Movie Length")]]/text()',
+    'DURATION2':      '//p[contains(text(), "Duration")]/b',
+
+    # Images:
+    'POSTER_MAIN':       "id('moviewrap')/img",
+    'POSTER_MAIN_MOVIE': '//a[@rel="covers"]/img[contains(@alt, "Cover")]',
+    'MOV_PHOTOS_LIST':   '//img[@class="yborder" and contains(@alt, "scene Array")]',
+    'MOV_PHOTOS_COUNT':  '//div[@class="p8 mt5"]//span[1][contains(text(), " Pictures")]/text()',
+    'MOV_PHOTOS_REF':    '//div[@class="p8 mt5"]//a[span[1][contains(text(), " Pictures")]]',
+    'VIDEOSTILLS_COUNT': '//p[span/b[contains(text(), "Video Stills")]]/b',
+    'VIDEOSTILLS_OLD':   '//div[div[contains(text(), "Video Stills")]]//img',
+    'QUICKTIMELINE_OLD': '//div[div[span[contains(text(), "Quick Timeline")]]]//img',
+    'PHOTOSET_COUNT':    '//p[span/b[contains(text(), "Photo Set")]]/b',
+    'PHOTOSET_LIST':     '//a[contains(@href, "http://www.data18.com/viewer/")]/img',
+
+    # Release date:
+    'RELEASE_DATE1':  '//p[text()[contains(translate(.,"relasdt","RELASDT"),"RELEASE DATE")]]//a',
+    'RELEASE_DATE2': '//*[span[contains(text(),"Release date")]]//a[@title="Show me all updates from this date"]',
+    'RELEASE_DATE3': '//*[span[contains(text(),"Release date")]]/span[@class="gen11"]/b',
+    'RELEASE_DATEU': '//*[span[contains(text(),"Release date")]]/span[@class="gen11"]/i',
+    'RELEASE_DATEM': '//p[contains(text(),"Release date")]',
+
+    # Asorted...:
+    'EXTRACT_MOVIE_URL':     'a[2]',
+    'EXTRACT_MOVIE_DATE':    'text()[1]',
+    'EXTRACT_MOVIE_THUMB':   'a/img',
+    'EXTRACT_MOVIE_TITLE':   'a[2]',
+    'EXTRACT_SCENE_THUMB':   'div/a[1]/img',
+    'EXTRACT_SCENE_URL':     'div/a[1][img]',
+    'EXTRACT_CONTENT_SITE':  'p[contains(text(), "%s:")]/a/text()',
+    'EXTRACT_CONTENT_URL':   'p[2]/a[1]',
+    'EXTRACT_CONTENT_DATE':  'p[1]/text()[1]',
+    'EXTRACT_CONTENT_TITLE': 'p[2]/a[1]',
+    'EXTRACT_CONTENT_THUMB': 'div[1]/p[1]/a[1]/img[1]',
+    'DOCUMENT_TITLE':        '//div/h1/text()',
+    'STRINGIFY':             'string(%s)',
+    '.':                     '.',
+}
+
+# ==============================================================================
+# Types:
+# ==============================================================================
+
+SearchSceneTest = namedtuple('SearchSceneTest',
+                            ['name', 'movie', 'scene', 'actor', 'template'])
+
+TempResult  = namedtuple('TempResult',
+                        ['score', 'smode', 'url', 'title', 'date', 'thumb',
+                        'site', 'network', 'studio', 'format_title'])
+
+CompareData = namedtuple('CompareData', ['title', 'year'])
+
+ImageJob    = namedtuple('ImageJob',
+                        ['url', 'referer', 'type', 'sort_order', 'preview'])
+
+# ==============================================================================
+# XPath helpers:
+# ==============================================================================
+
+def xpmod(xpkey, *args):
+    x = XPATHS2[xpkey]
+    return x % args if args else x
+
+def xp(node, xpkey = None, *args):
+    return node.xpath(xpmod(xpkey, *args)) if xpkey else node
+
+def string_xpath(source, xpkey = None, *args):
+    node = xp(source, 'STRINGIFY', xpmod(xpkey, *args) if xpkey else '.')
+    return node.strip() if node else None
+
+def xp_first_text(nodes): return nodes and nodes[0].text_content().strip()
+
+def try_xpath_direct(node, xpkey, *args):
+    return try_lam(lambda: xp(node, xpkey, *args)[0].text_content().strip())
+
+def norm_text_xpath(node, xpath, *args):
+    return normalize_ws(try_xpath_direct(node, xpath, *args))
+
+def attr_if(node, attr, query):
+    r = xp(node, query)
+    if r is None or len(r) == 0: return None
+    if isinstance(r, list): r = r[0]
+    val = r.get(attr)
+    return val and val.strip()
+
+def anchor_xpath(   source, query): return attr_if(source, 'href', query)
+def image_url_xpath(source, query): return attr_if(source, 'src',  query)
+def alt_xpath(      source, query): return attr_if(source, 'alt',  query)
+
+# ==============================================================================
+# General Utility:
+# ==============================================================================
+
+def compute_duration(hours, mins, secs):
+    return ((hours * 60 + mins) * 60 + secs) * 1000
+
+def normalize_name(name):
+    stripped = str(String.StripDiacritics(name))
+    return name if len(stripped) == 0 else stripped
+
+def leventh_dist(x, y):
+    return Util.LevenshteinDistance(x.lower(), y.lower())
+
+def join_slug(parts): return '-'.join(parts)
+
+def dict_first_prefix_key(g, prefix):
+    pres = filter(lambda e: e[0].startswith(prefix), g)
+    return next(filter(lambda e: e[1], pres), None)
+
+def disjoint_spans_replace(original, spans):
+    if not spans: return original
+    accum       = ""
+    prev_end    = 0
+    for (start, end), instead in sorted(spans, key=lambda span: span[0]):
+        accum   += original[prev_end:start] + instead
+        prev_end = end
+    accum       += original[prev_end:]
+    return accum
+
+def match_item_span(match, prefix):
+    item = dict_first_prefix_key(match.groupdict().items(), prefix)
+    return (item and item[1].strip(), item and match.span(item[0]))
+
+def normalize_ws(string):
+    RE = re.compile(r'\s+')
+    return RE.sub(' ', string) if string else string
+
+def try_lam(lam, *args):
+    try:    return lam(*args)
+    except: return None
+
+def try_lam2(lam, *args):
     try:
-        slug = sluggify_name(self, name)
-        url, root, title = cb_urt(slug)
-        return make_result(key, slug, title, root.xpath(thumbPath)[0], lang)
-    except Exception, e:
+        return lam(*args)
+    except:
+        Log(traceback.format_exc())
+        return None
+
+# ==============================================================================
+# Logging:
+# ==============================================================================
+
+def clog(cond, log):
+    if cond: Log(log)
+
+def log_header( header ):
+    Log('Data18 Version : ' + VERSION_NO)
+    Log('************** ' + header + ' ****************')
+
+def log_section():
+    Log('-----------------------------------------------------------------------')
+
+def log_found(found, query, year):
+    log_section()
+    Log('Found %s result(s) for query "%s" (%s)' % (len(found), query, year))
+
+    below = False
+    for i, f in enumerate(found):
+        if not below and f.score < IGNORE_SCORE:
+            below = True
+            Log("These were below the score limit (%s)" % IGNORE_SCORE)
+        Log('\t%s.\t[%s] [%s]\t[%s]\t%s' % (i, str(f.date), f.smode, f.score, f.title))
+
+    log_section()
+
+def LogList(what, items, cb = lambda e: e):
+    if not items: return
+    try:
+        Log(what)
+        for e in items: Log('| ---- %s' % cb(e))
+    except:
+        pass
+
+### Writes metadata information to log.
+def log_metadata(metadata, header, d18 = True):
+    Log(header)
+    log_section()
+    Log(    '* ID/Slug:...........%s' % metadata.id)
+    if d18:
+        Log('* URL:...............%s' % SearchMode.from_slug(metadata.id).url())
+    Log(    '* Title:.............%s' % metadata.title)
+    Log(    '* Release date:......%s' % str(metadata.originally_available_at))
+    Log(    '* Year:..............%s' % str(metadata.year))
+    Log(    '* TagLine:...........%s' % str(metadata.tagline))
+    Log(    '* Content rating:....%s' % metadata.content_rating)
+    Log(    '* Duration (min):....%s' % (metadata.duration and 
+                                         metadata.duration / 1000 / 60))
+    Log(    '* Studio:............%s' % str(metadata.studio))
+    Log(    '* Summary:...........%s' % metadata.summary)
+    LogList('* Directors:',             metadata.directors)
+    LogList('* Poster URL:',            metadata.posters.keys())
+    LogList('* Art:',                   metadata.art.keys())
+    LogList('* Extras:',                metadata.extras, lambda e: e.url )
+    LogList('* Collections:',           metadata.collections)
+    LogList('* Genres:',                metadata.genres)
+    LogList('* Starring:',              metadata.roles,
+            lambda e: "%s (%s)" % (e.actor, e.photo))
+    log_section()
+
+
+# ==============================================================================
+# Request + Parse utilites:
+# ==============================================================================
+
+def request_data_html(mode, id):  return request_html(D18_MODE_URL[mode] % id)
+
+def parse_document_network(node): return norm_text_xpath(node, 'NETWORK')
+def parse_document_studio(node):  return norm_text_xpath(node, 'STUDIO')
+def parse_document_site(node):    return norm_text_xpath(node, 'SITE')
+def parse_document_serie(node):   return norm_text_xpath(node, 'SERIE')
+
+def parse_document_title(html):
+    return normalize_ws(xp(html, 'DOCUMENT_TITLE')[0].strip())
+
+def date_from_string(string):
+    try:
+        return Datetime.ParseDate(string).date()
+    except:
+        try:
+            return datetime.datetime.strptime(string, '%B %d, %Y').date().replace(day=1)
+        except:
+            return datetime.datetime.strptime(string, '%B, %Y').date().replace(day=1)
+
+def parse_document_date(html):
+    try:
+        if string_xpath(html, 'RELEASE_DATEU'):
+            return None
+
+        try:
+            year = xp_first_text(xp(html, 'RELEASE_DATE1'))
+            date = re.search(r'(\d{8})', year).group(0)
+            return date_from_string(curdate)
+        except:
+            try:
+                date = xp_first_text(xp(html, 'RELEASE_DATE2'))
+                return date_from_string(date)
+            except:
+                date = xp_first_text(xp(html, 'RELEASE_DATE2'))
+                return date_from_string(date)
+    except:
+        string  = xp_first_text(xp(html, 'RELEASE_DATEM'))
+        return date_from_string(string.rsplit(':')[-1].strip())
+
+def format_search_title(title, curdate, extras = []):
+    if title.count(', The'):
+        title = 'The ' + title.replace(', The', '', 1)
+
+    extra = '/'.join([e for e in extras if e])
+    extra = ', '.join([e for e in [str(curdate), extra] if e]).strip()
+
+    if len(extra) > 0:
+        title = title + ' (' + extra + ')'
+
+    return title.strip()
+
+# ==============================================================================
+# Searching / Mode:
+# ==============================================================================
+
+class SearchMode(object):
+    def __init__(self, mode, id, sid = None):
+        self.mode = mode
+        self.id   = int(id)
+        self.sid  = int(sid) if sid else None
+
+    def is_content(self): return self.mode == 0
+    def is_movie(self):   return self.mode == 1
+    def is_scene(self):   return self.mode == 2
+    def scene_id(self):   return self.sid
+    def __str__(self):    return self.slug()
+    def __repr__(self):   return self.slug()
+    def slug(self):
+        mstr = D18_MODE_STRINGS[self.mode]
+        end  = [str(self.sid)] if self.is_scene() else []
+        return join_slug([mstr, str(self.id)] + end)
+
+    def url(self):
+        mstr = D18_MODE_STRINGS[1 if self.mode == 1 else 0]
+        end  = [str(self.sid)] if self.is_scene() else []
+        return D18_BASE_URL + '/'.join([mstr, str(self.id)] + end)
+
+    def combine(self, scene): return SearchMode(2, self.id, scene.id)
+    def scene_mov(self): return SearchMode(1, self.sid)
+
+    @staticmethod
+    def from_slug(slug):
+        RE = re.compile(r'[^a-zA-Z0-9]', flags = re.I)
+        parts = RE.split(slug, 2)
+
+        if len(parts) < 2: return SearchMode(0, parts[0])
+        try:
+            mode = D18_MODE_STRINGS.index(parts[0])
+        except:
+            mode = D18_MODE_STRINGS.index(parts[0] + 's')
+        id    = parts[1]
+        sid   = parts[2] if len(parts) > 2 else None
+        return SearchMode(mode, id, sid)
+
+# ==============================================================================
+# Searching / Fixed:
+# ==============================================================================
+
+# Find and normalize search mode:
+def determine_search_fixed(test, c = True):
+    def log(s): clog(c, s)
+
+    test_parts = test.rsplit('/')
+    if all(x.isdigit() for x in test_parts):
+        if len(test_parts) == 1:
+            log('Search needle is numeric, assuming: content/<id>')
+            return SearchMode(0, test_parts[0], None)
+        else:
+            log('Search needle is <id>/<id>, assuming: scene/<content-id>/<movie-id>')
+            return SearchMode(2, test_parts[0], test_parts[1])
+
+    log('Attempting search via regex, D18_FIXED_SEARCH')
+    rmatch = D18_FIXED_SEARCH.match(test)
+    if not rmatch:
+        log('No match with regex')
+        return None
+
+    log('Found via regex, D18_FIXED_SEARCH')
+    (mode, id, sid) = rmatch.groups()
+    try:
+        mode = 0 if sid else D18_MODE_STRINGS.index(mode)
+    except: 
+        mode = D18_MODE_STRINGS.index(mode + 's')
+
+    return SearchMode(mode, id, sid)
+
+# Handle fixed URLs & IDs.
+def search_fixed(results, test, lang = None):
+    smode = determine_search_fixed(test)
+    if not smode:
+        log_section()
         return False
 
-def metadata_init(metadata, studio, slug, cb_urt):
-    url, root, title = cb_urt(slug)
+    Log("search_fixed: %s" % smode )
+
+    # Fetch HTML for primary:
+    html = request_data_html(1 if smode.is_movie() else 0, smode.id)
+
+    curdate = parse_document_date(html)
+    network = parse_document_network(html)
+    site    = parse_document_site(html)
+    title   = parse_document_title(html)
+    title   = format_search_title(title, curdate, [network, site])
+
+    Log('search_fixed found: %s' % title)
+
+    # Make sure movie ID is correct, should throw otherwise.
+    if smode.is_scene():
+        movie_title = parse_document_title(request_data_html(1, smode.sid))
+        Log('belongs to movie with title:  %s' % movie_title )
+
+    # Set the result
+    results.Append(make_result(smode.slug(), title, 100, lang))
+    log_section()
+    return True
+
+# ==============================================================================
+# Searching / Utilities:
+# ==============================================================================
+
+def make_result(_id, _name, _score, _lang, _thumb = None):
+    return MetadataSearchResult(id = _id, name = _name, score = _score,
+                                lang = _lang, thumb = _thumb)
+
+def compute_score(compare, title, date):
+    # Compute 
+    score = INIT_SCORE - leventh_dist(compare.title, title)
+    if date is None or compare.year is None:
+        Log('compute_score, date: No date found')
+    else:
+        Log('compute_score, Found Date = %s' % date)
+        # Wrong year must cost a lot in score.
+        score -= math.pow(abs(int(compare.year) - int(date.year)), DATE_SCORE_BASE)
+    return score
+
+def score_sort(found):
+    return sorted(found, key=lambda f: f.score, reverse=True)
+
+def temps_filter_sort(found):
+    return score_sort(list(filter(lambda f: f.smode, found)))
+
+def search_html(query):
+    return request_html(D18_SEARCH_URL % String.URLEncode(query))
+
+def movie_html_extras(smode):
+    html    = request_data_html(smode.mode, smode.id)
+    site    = parse_document_site(html)
+    studio  = parse_document_studio(html)
+    network = parse_document_network(html)
+    return (html, site, network, studio)
+
+def extract_movie(compare, node, scene_test = None):
+    murl    = anchor_xpath(node,    'EXTRACT_MOVIE_URL')
+    smode   = determine_search_fixed(murl, False)
+    date    = date_from_string(string_xpath(node, 'EXTRACT_MOVIE_DATE'))
+    thumb   = image_url_xpath(node, 'EXTRACT_MOVIE_THUMB')
+    title   = string_xpath(node,    'EXTRACT_MOVIE_TITLE')
+    site    = None
+    network = None
+    studio  = None
+    score   = compute_score(compare, title, date)
+
+    if scene_test:
+        scene = extract_scene(scene_test, smode, score, title, date)
+        if scene: return scene
+
+    if not scene_test and score >= MORE_SCORE:
+        html, site, network, studio = movie_html_extras(smode)
+
+    return TempResult(score, smode, murl, title, date, thumb,
+                      site, network, studio,
+                      format_search_title(title, date, [network, site, studio]))
+
+def extract_content(compare, node):
+    murl         = anchor_xpath(node, 'EXTRACT_CONTENT_URL')
+    smode        = determine_search_fixed(murl, False)
+    date         = date_from_string(string_xpath(node, 'EXTRACT_CONTENT_DATE'))
+    title        = string_xpath(node, 'EXTRACT_CONTENT_TITLE')
+    thumb        = image_url_xpath(node, 'EXTRACT_CONTENT_THUMB')
+    site         = string_xpath(node, 'EXTRACT_CONTENT_SITE', 'Site')
+    network      = string_xpath(node, 'EXTRACT_CONTENT_SITE', 'Network')
+    score        = compute_score(compare, title, date)
+    format_title = format_search_title(title, date, [network, site])
+    return TempResult(score, smode, murl, title, date, thumb,
+                      site, network, None, format_title)
+
+# ==============================================================================
+# Searching / Scenes:
+# ==============================================================================
+
+# Builds regex for search_scene(...):
+def build_scene_regex():
+    """
+    Tested with these:
+    S_TEST = ['India Summer, And Abd in How to Make a Cheap Porno - Scene 1',
+              'How to make a cheap porno - Scene 1',
+              'Alina Li - Scene 1 in How to make a cheap porno',
+              'Scene 1 - Alina Li in How to make a cheap porno',
+              'Scene 1 in How to make a cheap porno',
+              'Scene 1 - How to make a cheap porno',
+              'Scene 1: How to make a cheap porno']
+    """
+    re_PRO = r"\s*\b(?:in|from|at)\b\s*"
+    re_NOS = lambda n: r"scene\s*(?P<scene%s>\d+)" % n
+    re_NOL = lambda n: r"(?:%s(?:\s*[:-]?\s+)?)"   % re_NOS(n)
+    re_NOR = lambda n: r"(?:(?:\s+[:-]?\s+)?%s)"   % re_NOS(n)
+    re_STA = lambda s: r"(?P<actor%s>(?:\b[\w]+\b[,\s]*)+?\b[\w]+\b)" % s
+    def re_MOV(m, greedy = True):
+        g = r"*" if greedy else r"+?"
+        return r"(?P<movie%s>(?:\b[\w#\.]+\b[,\s]*)%s\b[\w#\.]+\b)" % (m, g)
+
+    re_A   = re_STA(1) + re_PRO + re_MOV(1, False) + re_NOR(1)
+    re_B   = re_STA(2) + re_NOR(2) + re_PRO + re_MOV(2)
+    re_C   = re_MOV(3, False) + re_NOR(3)
+    re_D   = re_NOL(4) + re_STA(4) + re_PRO + re_MOV(4)
+    re_E   = re_NOL(5) + re_PRO + re_MOV(5)
+    re_F   = re_STA(6) + re_PRO + re_MOV(6)
+    re_G   = re_NOL(7) + re_MOV(7)
+    regex  = r"^(?:%s)$" % r"|".join([re_A, re_B, re_C, re_D, re_E, re_F, re_G])
+    return re.compile(regex, flags = re.I)
+
+REGEX['SEARCH_SCENE'] = build_scene_regex()
+
+
+def compute_scene_test(name):
+    # Search for a scene in a movie:
+    Log("Testing scene search for: %s." % name)
+
+    match = REGEX['SEARCH_SCENE'].match(name)
+    if not match:
+        Log("Regex for scene search didn't match.")
+        return
+
+    movie, mspan = match_item_span(match, "movie")
+    scene, sspan = match_item_span(match, "scene")
+    actor, aspan = match_item_span(match, "actor")
+
+    print(" * movie:    \t" + str(movie))
+    print(" * scene:    \t" + str(scene))
+    print(" * actor:    \t" + str(actor))
+
+    if not movie or not (scene or actor):
+        Log("Irrecoverable error: no movie or neither of scene and actor found")
+        return
+
+    replaces = [(mspan, "{movie}")]
+    if sspan: replaces.append((sspan, "{scene}"))
+    if aspan: replaces.append((aspan, "{actor}"))
+    template = disjoint_spans_replace(name, replaces)
+    print(" * template: \t"+ str(template))
+    log_section()
+
+    return SearchSceneTest(name, movie, scene, actor, template)
+
+def scene_add_actorscores(scnode, actors):
+    score = 0
+    for scactor in xp(scnode, 'SCENES_STARRING'):
+        scactor = scactor.strip().lower()
+        if scactor in actors: ratio = 1
+        else: ratio = 1 - min([Util.LevenshteinRatio(sactor, a) for a in actors])
+        score += SCENE_SCORE_ACTOR_ADD * ratio
+    return score
+
+def compute_scene_node(scene_test, html):
+    if scene_test.scene:
+        node = xp(html, 'SEARCH_SCENES', scene_test.scene)
+        if node: return (node[0], SCENE_SCORE_ADD)
+
+    if scene_test.actor:
+        actors = [a.strip().lower() for a in scene_test.actor.split(',')]
+        nodes = []
+        for n in xp(html, 'SEARCH_SCENES', ""):
+            nodes.append((n, scene_add_actorscores(n, actors)))
+        return next(sorted(nodes, key = lambda e: e[1], reverse = True), None)
+
+    return None
+
+def extract_scene(scene_test, mov_smode, mov_score, mov_title, date):
+    html, site, network, studio = movie_html_extras(mov_smode)
+    r = compute_scene_node(scene_test, html)
+    if r:
+        node, score = r
+        score += mov_score
+        try:
+            thumb   = image_url_xpath(node, 'EXTRACT_SCENE_THUMB')
+            curl    = anchor_xpath(node, 'EXTRACT_SCENE_URL')
+            smode   = determine_search_fixed(content_url, False).combine(mov_smode)
+            title   = scene_test.template.format(movie = mov_title,
+                                                 scene = scene_test.scene,
+                                                 actor = scene_test.actor)
+            ftitle  = format_search_title(scene_title, date, [network, site, studio])
+            return TempResult(score, smode, smode.url(), title, date, thumb,
+                              site, network, studio, ftitle)
+        except:
+            Log.Error(traceback.format_exc())
+
+    return None
+
+def search_scene(comp1, name):
+    scene_test = compute_scene_test(name)
+    if not scene_test: return []
+    comp2 = CompareData(scene_test.movie, comp1.year)
+    nodes = xp(search_html(scene_test.movie), 'SEARCH_MOVIE')
+    return  temps_filter_sort([extract_movie(comp2, n, scene_test) for n in nodes])
+
+# ==============================================================================
+# Searching / Connections:
+# ==============================================================================
+
+# Search for a connection:
+def search_connection(compare, name):
+    Log('Trying connections search.')
+    log_section()
+
+    parts = REGEX['CONN'].split(name)
+    if len(parts) < 2:
+        Log('Cant separate query into actor and site.')
+        return
+
+    # Take the first actor and the website name to search +
+    # NA site, Pull & visit connections:
+    actors = parts[0].split(',')
+    actor  = String.URLEncode(actors[0].strip().lower())
+    site   = String.URLEncode(parts[1].strip().lower())
+
+    Log("Connections query: {actor: %s, site: %s}" % (actor, site))
+    html   = request_html(D18_CONNECTIONS_URL % (actor, site))
+    found  = []
+    for conn in xp(html, 'SEARCH_CONNS'):
+        Log("Connection url: %s" % conn)
+        for n in xp(request_html(conn), 'SEARCH_CONTENT'):
+            found.append(extract_content(compare, n))
+
+    return temps_filter_sort(found)
+
+# ==============================================================================
+# Foreign / General:
+# ==============================================================================
+
+def foreign_slug(name):
+    return join_slug(x.lower() for x in re.split(r'\s+', name, 0, re.I))
+
+def make_result_foreign(key, slug, title, thumb, lang):
+    id = '%s$%s' % (join_slug(key), slug)
+    return [make_result(id, title, 100, thumb, lang)]
+
+def sluggify_name(name):
+    return foreign_slug(re.sub(r"[\W\_]+", ' ', name, 0, re.I))
+
+# ==============================================================================
+# Foreign / Whale network [passion-hd.com, fantasyhd.com, exotic4k.com]
+# ==============================================================================
+
+def fwhale_url(url_base, slug):
+    return 'http://%s/video/%s' % (url_base, slug)
+
+def fwhale_root(url):
+    return request_html(url).xpath('//*[contains(@class, "trailer-content")]')[0]
+
+def fwhale_date(root):
+    return date_from_string(root.xpath('.//*[contains(@class, "trailer-scene-info")]//*[contains(@class, "time")]/@title')[0].strip())
+
+def fwhale_title(root):
+    return root.xpath('.//*[contains(@class, "trailer-scene-info")]/h3/text()')[0].strip()
+
+def fwhale_poster(root):
+    return root.xpath('id("trial-thumb")/img/@src')[0].strip()
+
+def fwhale_search(url_base, studio, key, name, lang):
+    url    = fwhale_url(url_base, sluggify_name(name))
+    root   = fwhale_root(url)
+    date   = fwhale_date(root)
+    title  = fwhale_title(root)
+    ftitle = format_search_title(title, date, [studio])
+    thumb  = fwhale_poster(root)
+    log_found([TempResult(100,  None, url,    title, date, thumb,
+                          None, None, studio, ftitle)], name, date.year)
+    return make_result_foreign(key, sluggify_name(name), ftitle, lang, thumb)
+
+def fwhale_update_title(metadata, root):
+    metadata.title = fwhale_title(root)
+    Log('Title Updated')
+
+def fwhale_update_starring(metadata, root):
+    stars = root.xpath('.//h3/following-sibling::p/a/text()')
+    if not stars: return
     metadata.roles.clear()
-    metadata.genres.clear()
-    metadata.directors.clear()
-    metadata.collections.clear()
+    for star in stars:
+        role = metadata.roles.new()
+        role.actor = star
+        role.name  = star
+        role.photo = None
+
+def fwhale_trailer(root):
+    return root.xpath("id('main_player')/div/@data-url")[0].strip()
+
+def fwhale_update_duration(metadata, root):
+    if metadata.duration and metadata.duration > 1: return True
+    string  = root.xpath('.//p[contains(text(), "Length")]/text()')[0].strip()
+    Log(string)
+    search1 = re.search(r'(\d+)\:(\d+)?', string)
+    if search1:
+        data  = list(map(int, search1.groups(0)))
+        metadata.duration = compute_duration(0, data[0], data[1])
+
+def fwhale_update(url_base, studio, slug, metadata, media, lang):
+    url  = fwhale_url(url_base, slug)
+    root = fwhale_root(url)
+
     metadata.tagline = url
-    metadata.title = title
+
+    try_lam2(lambda: update_date_imm(metadata, fwhale_date(root)))
+
+    try_lam2(fwhale_update_title, metadata, root)
     metadata.title_sort = metadata.title
+
+    try_lam2(fwhale_update_starring, metadata, root)
+    try_lam2(fwhale_update_duration, metadata, root)
+
     metadata.studio = studio
-    metadata.collections.add(metadata.studio)
-    return (url, root, title)
+    metadata.collections.clear()
+    metadata.collections.add(studio)
+    metadata.collections.add('Whale Member Ltd')
 
-def site_generic_url_root_title(url_base, self, slug):
-    return url_root_title(self, 'http://%s/video/%s' % (url_base, slug), '//*[@id="content"]', './/h2//*[@class="title"]/em/text()')
+    images = []
+    poster = try_lam2(fwhale_poster, root)
+    if poster:
+        images.append(ImageJob(poster, url, 'poster', 1, False))
 
-def site_generic_search(url_base, self, key, name, lang):
-    return site_search(self, partial(site_generic_url_root_title, url_base, self), key, name, lang, './/*[@class="preview-images"]/img[1]/@src')
+    download_images(metadata, images)
 
-def site_generic_update(url_base, studio, self, slug, metadata, media, lang):
-    url, root, title = metadata_init(metadata, studio, slug, partial(site_generic_url_root_title, url_base, self))
-    metadata.summary = ""
-    self.updateDate(metadata, self.getDateFromString(root.xpath('.//abbr[@class="timeago"]/@title')[0].split(' ')[0]))
-    for actor in root.xpath('.//p[@class="actor"]//a'):
-        role = metadata.roles.new()
-        role.actor = actor.xpath('./text()')[0]
-        photoRoot = self.requestHTML('http://%s%s' % (url_base, actor.get('href')))
-        role.photo = self.getImageUrlFromXPath(photoRoot, '//*[@class="actorthumb"]')
-    self.getImageSet(metadata, [[image, url, True, 0, 1] for image in root.xpath('.//*[@class="preview-images"]/img/@src')])
+    trailer = try_lam2(fwhale_trailer, root)
+    if trailer:
+        metadata.extras.clear()
+        trailer = TrailerObject(url   = trailer,
+                                thumb = poster,
+                                title = metadata.title,
+                                year  = metadata.year,
+                                originally_available_at = metadata.originally_available_at)
+        metadata.extras.add(trailer)
 
-def site_generic_pair(studio, base_url):
-    return [partial(site_generic_search, base_url), partial(site_generic_update, base_url, studio)]
-
-def site_colette_url_root_title(self, slug):
-    return url_root_title(self, 'http://coletteporn.com/%s' % slug, '//body/div[@class="container"]', './/ol[@class="breadcrumb"]/li[@class="active h1"]/text()')
-
-def site_colette_search(self, key, name, lang):
-    return site_search(self, partial(site_colette_url_root_title, self), key, name, lang, './/*[@id="mustified"]/*[@class="galItem"][1]/a/@href')
-
-def site_colette_update(self, slug, metadata, media, lang):
-    url, root, title = metadata_init(metadata, 'Colette', slug, partial(site_colette_url_root_title, self))
-    metadata.summary = root.xpath('.//p[@class="daContent"]/text()[1]').strip()
-    for actor in root.xpath('.//ol[@class="breadcrumb"]/li[2]/a/text()'):
-        role = metadata.roles.new()
-        role.actor = actor
-    self.getImageSet(metadata, [[image, url, False, 0, 1] for image in root.xpath('.//*[@id="mustified"]/*[@class="galItem"]/a/@href')])
+def fwhale_site(studio, base_url):
+    return [partial(fwhale_search, base_url, studio),
+            partial(fwhale_update, base_url, studio)]
 
 FOREIGN_DISPATCH = {
-    ('colette',): [site_colette_search, site_colette_update],
-    ('fantasy', 'hd'): site_generic_pair('Fantasy HD', 'fantasyhd.com'),
-    ('exotic4k',): site_generic_pair('Exotic4k', 'exotic4k.com'),
-    ('passion', 'hd'): site_generic_pair('Passion HD', 'passion-hd.com'),
-    ('my', 'very', 'first', 'time'): site_generic_pair('My Very First Time', 'myveryfirsttime.com')
+    ('colette',):      1,#[site_colette_search, site_colette_update],
+    ('fantasy', 'hd'): fwhale_site('Fantasy HD', 'fantasyhd.com'),
+    ('exotic4k',):     fwhale_site('Exotic4k',   'exotic4k.com'),
+    ('passion', 'hd'): fwhale_site('Passion HD', 'passion-hd.com'),
+    ('my', 'very', 'first', 'time'):
+                       fwhale_site('My Very First Time', 'myveryfirsttime.com')
 }
+
+def search_foreign(results, media, normalized, lang):
+    if not media.filename: return
+
+    path = String.Unquote(media.filename)
+    filename = path.split('/')[-1]
+
+    log_section()
+    Log("Searching via foreign sites, filename: %s" % filename)
+
+
+    splitter = re.compile(r"[\W\_]", re.I)
+    brackets = re.compile(r"\[([^\[\]]+)\]", re.I)
+
+    for match in brackets.findall(filename):
+        key = tuple([x.lower() for x in splitter.split(match)])
+        if key not in FOREIGN_DISPATCH: continue
+
+        Log("Searching %s for: %s" % (key, media.name))
+
+        returned = FOREIGN_DISPATCH[key][0](key, normalized, lang)
+        if returned:
+            Log("found via %s!" % (list(key)))
+            for r in returned: results.Append(r)
+            return True
+            log_section()
+
+    Log("Not found via foreign sites.")
+    log_section()
+    exit()
+    return False
+
+# ==============================================================================
+# Searching / Main:
+# ==============================================================================
+
+def replace_special(title):
+    # Swap fullwidth and halfwidth replacements of colons, commas, etc.:
+    # - Why Colon? Windows doesn't allow colons.
+    r = [(r, n[0]) for n in REPLACEMENTS.items() for r in n[1]]
+    return reduce(lambda a, e: a.replace(e[0], e[1]), r, title)
+
+if DEV: replace_special2 = replace_special
+else:
+    def replace_special2(title):
+        return replace_special(title.decode("utf-8")).encode('utf-8')
+
+def search_basic(compare, query):
+    html = search_html(query)
+    f    = []
+    for n in xp(html, 'SEARCH_MOVIE'):   f.append(extract_movie(compare,   n))
+    for n in xp(html, 'SEARCH_CONTENT'): f.append(extract_content(compare, n))
+    return temps_filter_sort(f)
+
+def search(results, media, lang, manual = False):
+    log_header('SEARCH')
+
+    title = media.name
+
+    if search_fixed(results, title, lang): return
+
+    # @TODO
+    year = media.year
+    if media.primary_metadata is not None:
+        year = media.primary_metadata.year
+        Log('Searching for Year: %s' % year)
+
+    # @TODO
+    if media.primary_metadata is not None:
+        title = media.primary_metadata.title
+    title = replace_special2(title)
+    Log('Searching for Title: %s' % title)
+
+    # Normalize title:
+    query = normalize_name(title)
+    Log('Title (Normalized): "%s", Title (Before): "%s"' % (query, title))
+
+    if search_foreign(results, media, query, lang): return
+
+    # Basic search:
+    Log('***** SEARCHING FOR "%s" (%s) - DATA18 *****' % (query, year))
+    compare = CompareData(title, year)
+    found   = search_basic(compare, query)
+    log_found(found, query, year)
+
+    # Strip and research:
+    query2 = title.lstrip('0123456789')
+    if query != query2:
+        found2 = search_basic(compare, query2)
+        log_found(found2, query, year)
+        found.extend(found2)
+
+    # Perhaps this a scene in a movie, try to search for the movie instead:
+    if not found:
+        Log('No results found for query, so far "%s"\n' % query2)
+        scenes = search_scene(compare, query)
+        log_found(scenes, query, year)
+        found.extend(scenes)
+
+        # Next: try a connection:
+        if not found:
+            Log('Still no results found even with scenes...\n')
+            conns = search_connection(compare, query)
+            log_found(conns, query, year)
+            found.extend(conns)
+
+    # Walk the found items and gather extended information
+    for i, f in enumerate(score_sort(found)):
+        Log('* Score:   \t%s' % f.score)
+        Log('* Slug:    \t%s' % f.smode)
+        Log('* Title:   \t%s' % f.title)
+        Log('* FTitle:  \t%s' % f.format_title)
+        Log('* Date:    \t%s' % f.date)
+        Log('* Thumb:   \t%s' % f.thumb)
+        Log('* Site:    \t%s' % f.site)
+        Log('* Network: \t%s' % f.network)
+        Log('* Studio:  \t%s' % f.studio)
+
+        if f.score < IGNORE_SCORE:
+            Log('*          \tScore is below ignore boundary (%s)... Skipping!' % IGNORE_SCORE)
+        else:
+            results.Append(make_result(
+                f.smode.slug(), f.format_title, f.score, lang, f.thumb))
+
+        if i != len(found): log_section()
+
+        if not manual and len(found) > 1 and f.score >= GOOD_SCORE:
+            Log('*** Found result above GOOD_SCORE, stopping! ***')
+            break
+
+# ==============================================================================
+# Updating / Images:
+# ==============================================================================
+
+def photoset_count(html, xpkey):
+    return try_lam(lambda:
+                   int(re.search(r'(\d+)', string_xpath(html, xpkey)).group(1)))
+
+def media_proxy(img):
+    if DEV: return img.url
+
+    url     = img.url
+    referer = img.referer or img.url
+
+    if IMAGE_PROXY_URL:
+        url = IMAGE_PROXY_URL + ('?url=%s&referer=%s' % (url, referer))
+
+    content = HTTP.Request(url, headers = {'Referer': referer}).content
+
+    if img.preview:
+        return Proxy.Preview(content, sort_order = img.sort_order)
+    else:
+        return Proxy.Media(content,   sort_order = img.sort_order)
+
+@parallelize
+def download_images(metadata, images):
+    for img in images:
+        @task
+        def downloader(metadata = metadata, img = img):
+            Log("Downloading image: %s" % str(img))
+
+            typ = img.type
+            url = img.url
+
+            if   typ == 'art':
+                metadata.art[url]     = media_proxy(img)
+            elif typ == 'poster':
+                metadata.posters[url] = media_proxy(img)
+            elif typ == 'banner':
+                metadata.banners[url] = media_proxy(img)
+
+        if DEV: downloader(metadata, img)
+
+def fetch_poster_main(images, sort_order, referer, html):
+    if sort_order >= IMAGE_MAX: return sort_order
+    image_url     = image_url_xpath(html, 'POSTER_MAIN')
+    if not image_url:
+        image_url = image_url_xpath(html, 'POSTER_MAIN_MOVIE')
+    if not image_url: return sort_order
+    images.append(ImageJob(image_url, referer, 'poster', sort_order, False))
+    sort_order += 1
+
+def fetch_photosets(images, sort_order, smode, html):
+    if sort_order >= IMAGE_MAX: return sort_order
+
+    # Get count:
+    referer = D18_PHOTOSET_REF % smode.id
+    count   = photoset_count(html, 'PHOTOSET_COUNT')
+    if not count:
+        count = photoset_count(html, 'VIDEOSTILLS_COUNT')
+        if not count:
+            count = photoset_count(html, 'MOV_PHOTOS_COUNT')
+            if count:
+                referer = anchor_xpath(html, 'MOV_PHOTOS_REF')
+            else:
+                Log("No count found for photo sets")
+                return sort_order
+
+    # Get base url:
+    if smode.is_movie():
+        ubase = xp(html, 'MOV_PHOTOS_LIST')[0].get('src')
+    else:
+        ubase = image_url_xpath(html, 'PHOTOSET_LIST')
+
+    ubase = ubase.split('/')[:-2]
+    ubase = '/'.join(ubase)
+
+    # Add the images:
+    for idx in range(1, count):
+        if sort_order >= IMAGE_MAX: return sort_order
+        str_index = '0' + str(idx) if idx < 10 else str(idx)
+        image_url = ubase + '/' + str_index + '.jpg'
+        images.append(ImageJob(image_url, referer, 'art', sort_order, False))
+
+        sort_order += 1
+
+    return sort_order
+
+# Old videostills:
+def fetch_videostills_old(images, sort_order, referer, html):
+    if sort_order >= IMAGE_MAX: return sort_order
+
+    vidstills = xp(html, 'VIDEOSTILLS_OLD') or xp(html, 'QUICKTIMELINE_OLD')
+    if not vidstills: return sort_order
+
+    for still in vidstills:
+        if sort_order >= IMAGE_MAX: return sort_order
+        image_url = still.get('src').strip()
+        images.append(ImageJob(image_url, referer, 'poster', sort_order, False))
+        sort_order += 1
+
+    return sort_order
+
+def update_images(html, smode, metadata):
+    log_section()
+    Log('Finding images:')
+    log_section()
+
+    url        = smode.url()
+    images     = []
+    sort_order = 0
+    sort_order = try_lam2(fetch_poster_main,     images, sort_order, url,   html) or sort_order
+    sort_order = try_lam2(fetch_photosets,       images, sort_order, smode, html) or sort_order
+    sort_order = try_lam2(fetch_videostills_old, images, sort_order, url,   html) or sort_order
+
+    download_images(metadata, images)
+
+    log_section()
+
+# ==============================================================================
+# Updating:
+# ==============================================================================
+
+def update_tagline(metadata, smode):
+    tagline = smode.url()
+    if smode.is_scene(): tagline += ' , ' + smode.scene_mov().url()
+    metadata.tagline = tagline
+
+def update_date_imm(metadata, date):
+    if not date: return
+    metadata.originally_available_at = date
+    metadata.year = date.year
+    Log('Release Date Sequence Updated')
+
+def update_release_date(metadata, html, shtml):
+    try:
+        date = parse_document_date(html)
+    except:
+        date = parse_document_date(shtml)
+
+    update_date_imm(metadata, date)
+
+def update_director(metadata, html):
+    director = string_xpath(html, 'DIRECTOR')
+    if not director: return
+    metadata.directors.clear()
+    metadata.directors.add(normalize_ws(director))
+    Log('Director Updated')
+
+def update_summary(metadata, html, smode, prefix):
+    summ   = xp_first_text(xp(html, 'SUMMARY', prefix))
+    if not summ: return False
+    summ   = summ.replace('&13;', '').strip(' \t\n\r"') + "\n"
+    summ   = re.sub(r'%s:' % prefix, '', summ.strip('\n')).strip()
+    metadata.summary = normalize_ws(summ)
+    Log('Summary Sequence Updated')
+    return True
+
+def update_genres(metadata, html, smode):
+    metadata.genres.clear()
+    gen_xp = 'GENRE_MOVIE' if smode.is_movie() else 'GENRE_CONTENT'
+    for gen in xp(html, gen_xp): metadata.genres.add(normalize_ws(gen))
+    Log('Genre Sequence Updated')
+
+def update_starring(metadata, html, smode):
+    starring = xp(html, 'ACTOR_MOVIE' if smode.is_movie() else 'ACTOR_CONTENT')
+    if not starring: return False
+
+    metadata.roles.clear()
+    for star in starring:
+        name  = normalize_ws(alt_xpath(star, '.'))
+        photo = image_url_xpath(star, '.')
+        photo = re.sub(r'/stars/[^/]+/', '/stars/pic/', photo)
+        role  = metadata.roles.new()
+        role.actor = name
+        role.name  = name
+        role.photo = photo
+
+    Log('Starring Sequence Updated')
+    return True
+
+def update_starring_fb(metadata, html, clear):
+    if not clear: metadata.roles.clear()
+
+    starring     = set(xp(html, 'ACTOR_DEV') or [])
+    if not clear:
+        starring = starring.union(xp(html, 'ACTOR_FALLBACK') or [])
+    if not starring: return False
+
+    for star in starring:
+        name = normalize_ws(star)
+        role = metadata.roles.new()
+        role.name  = name
+        role.actor = name
+        role.photo = None
+
+    Log('Starring Sequence Updated')
+    return True
+
+def update_duration(metadata, html, smode):
+    if metadata.duration and metadata.duration > 1: return True
+
+    try:
+        string = string_xpath(html, 'DURATION')
+        data   = [0, 0, 0]
+        search1     = re.search(r'(\d+)\:(\d+)(?:\:(\d))?', string)
+        if search1:
+            data    = list(map(int, search1.groups(0)))
+        else:
+            data[1] = int(re.search(r'(\d+)', string).group(1))
+
+        metadata.duration = compute_duration(*data)
+        return True
+    except:
+        string   = string_xpath(html, 'DURATION2')
+        if not string: return None
+        Log(string)
+        RE = re.compile(r'(\d+)\s*mins?,?\s*(\d+)\s*secs?', flags = re.I)
+        match    = RE.search(string).groups(0)
+        duration = compute_duration(0, int(match[0]), int(match[1]))
+        metadata.duration = duration
+        return True
+
+def update_rating(metadata):
+    metadata.content_rating = 'NC-17'
+
+# Connect content + movie when it is a scene
+def update_related_movie(metadata, html, smode):
+    try:
+        href   = anchor_xpath(html, 'SCENE_MOVIE_FIX')
+        msmode = determine_search_fixed(href, False)
+        if msmode:
+            smode = smode.combine(msmode)
+            metadata.id = smode.slug()
+            return smode
+    except:
+        pass
+
+    return smode
+
+# Foreign site update:
+def update_foreign(metadata, media, lang):
+    parts = metadata.id.split('$', 1)
+    if len(parts) < 2: return False
+
+    key = tuple(parts[0].split('-'))
+
+    log_header('UPDATE "%s" MODE: %s, ID: %s ' % (media.title, key, parts[1]))
+    log_metadata(metadata, "Current metadata:", False)
+
+    update_rating(metadata)
+
+    FOREIGN_DISPATCH[key][1](parts[1], metadata, media, lang)
+
+    log_metadata(metadata, "New metadata:", False)
+
+    return True
+
+def update(metadata, media, lang, force = False):
+    if update_foreign(metadata, media, lang): return
+
+    smode = SearchMode.from_slug(metadata.id)
+
+    log_header('UPDATE "%s" SLUG: %s' % (media.title, smode.slug()))
+    log_metadata(metadata, "Current metadata:")
+
+    # Set basic stuff:
+    metadata.id = smode.slug()
+    update_rating()
+    update_tagline(metadata, smode)
+
+    html  = request_data_html(smode.mode, smode.id)
+    smode = update_related_movie(metadata, html, smode)
+    shtml = request_data_html(1, smode.sid) if smode.is_scene() else html
+
+    # Title:
+    metadata.title = parse_document_title(html)
+    Log('Title Updated')
+
+    try_lam2(update_release_date,    metadata, html,  shtml)
+
+    try_lam2(update_director,        metadata, html)
+
+    if not try_lam2(update_duration, metadata, html,  smode):
+        try_lam2(update_duration,    metadata, shtml, smode)
+
+    if not try_lam2(update_summary,  metadata, html,  smode, 'Story'):
+        try_lam2(update_summary,     metadata, shtml, smode, 'Description')
+
+    try_lam2(update_genres,          metadata, html,  smode)
+
+    sclear  = try_lam2(update_starring,    metadata, html, smode)
+    sclear  = try_lam2(update_starring_fb, metadata, html, sclear)
+
+    site    = try_lam2(parse_document_site,     html)
+    network = try_lam2(parse_document_network,  html)
+    studio  = try_lam2(parse_document_studio,   html) or network or site
+    serie   = try_lam2(parse_document_serie,    html)
+
+    if studio:
+        metadata.studio = studio
+        Log('Studio Sequence Updated')
+
+    # Collections:
+    collection = set(filter(None, [site, network, studio, serie]))
+    if collection:
+        metadata.collections.clear()
+        for c in collection: metadata.collections.add(c)
+        Log('Collection Sequence Updated')
+
+    update_images(html, smode, metadata)
+
+    log_metadata(metadata, "New metadata:")
+
+# ==============================================================================
+# Data18 Agent API:
+# ==============================================================================
 
 def Start():
     #HTTP.ClearCache()
-    HTTP.CacheTime = CACHE_1WEEK
-    HTTP.Headers['User-agent'] = 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.2; Trident/4.0; SLCC2; .NET CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; Media Center PC 6.0)'
+    HTTP.CacheTime = CACHE_1DAY
+    HTTP.SetHeader('User-agent', USER_AGENT)
     HTTP.Headers['Accept-Encoding'] = 'gzip'
 
 class Data18(Agent.Movies):
-    name = 'Data18'
-    languages = [Locale.Language.NoLanguage]
+    name             = 'Data18'
+    languages        = [Locale.Language.English]
+    accepts_from     = ['com.plexapp.agents.localmedia']
     primary_provider = True
-    accepts_from = ['com.plexapp.agents.localmedia']
 
-    prev_search_provider = 0
+    def search(self, results, media, lang, manual = False):
+        search(results, media, lang, manual)
 
-    def Log(self, message, *args):
-        if Prefs['debug']:
-            Log(message, *args)
-
-    def getDateFromString(self, string):
-        try:
-            return Datetime.ParseDate(string).date()
-        except:
-            return None
-
-    def getStringContentFromXPath(self, source, query):
-        return source.xpath('string(' + query + ')')
-
-    def getAnchorUrlFromXPath(self, source, query):
-        anchor = source.xpath(query)
-
-        if len(anchor) == 0:
-            return None
-
-        return anchor[0].get('href')
-
-    def getImageUrlFromXPath(self, source, query):
-        img = source.xpath(query)
-
-        if len(img) == 0:
-            return None
-
-        return img[0].get('src')
-
-    def findDateInTitle(self, title):
-        result = re.search(r'(\d+-\d+-\d+)', title)
-        if result is not None:
-            return Datetime.ParseDate(result.group(0)).date()
-        return None
-
-    def extractDateXPath(self, element):
-        return self.getDateFromString(self.getStringContentFromXPath(element, 'text()[1]'))
-
-    def urlQuote(self, string):
-        return String.Quote((string).encode('utf-8'), usePlus=True)
-
-    def doSearchBasic(self, url, scene_data = None):
-        html = self.requestHTML(url)
-        found = []
-
-        # Extract movie section:
-        for r in html.xpath('//div[a/img[@class="yborder"]]'):
-            murl = self.getAnchorUrlFromXPath(r, 'a[2]')
-            date = self.extractDateXPath(r)
-            thumb = self.getImageUrlFromXPath(r, 'a/img')
-            title = self.getStringContentFromXPath(r, 'a[2]')
-
-            # We actually have to open the document to get the scene link:
-            if scene_data:
-                try:
-                    # Fetch HTML
-                    movie_html = self.requestHTML(murl)
-                    content_url = movie_html.xpath('//*[@id="related"]//a[contains(text(), "Scene %s")]' % scene_data[1])[0].get('href')
-                    title = scene_data[2] % (title)
-                    found.append({'url': content_url, 'movie_url': murl, 'title': title, 'date': date, 'thumb': thumb, 'mode': 'scene'})
-                except Exception, e:
-                    Log.Error(traceback.format_exc())
-            else:
-                found.append({'url': murl, 'title': title, 'date': date, 'thumb': thumb, 'mode': 'movie'})
-
-        # Extract "content" section, shorter clips, etc:
-        for r in html.xpath('//div[@class="contenedor"]/div[@class="bscene genmed"]'):
-            date = self.extractDateXPath(r)
-            title = self.getStringContentFromXPath(r, 'p[2]/span[1]/a[1]')
-            murl = self.getAnchorUrlFromXPath(r, 'p[2]/span[1]/a[1]')
-            thumb = self.getImageUrlFromXPath(r, 'p[1]/a[1]/img[1]')
-
-            found.append({'url': murl, 'title': title, 'date': date, 'thumb': thumb, 'mode': 'content'})
-
-        return found
-
-    def doSearch(self, name, scene_data = []):
-        return self.doSearchBasic(D18_SEARCH_URL % (self.urlQuote(name)), scene_data)
-
-    def itemId(self, url):
-        return url.split('/', 4)[4]
-
-    def requestHTML(self, url):
-        return HTML.ElementFromURL(url, sleep=REQUEST_DELAY)
-
-    def requestDataHTML(self, mode, id):
-        return self.requestHTML(D18_ID_URL[mode] % id)
-
-    def urlToId(self, url):
-        test = url
-        if test.startswith(D18_BASE_URL):
-            # URL -> [mode, id, <optional-id>]
-            parts = test.rsplit('/')[3:]
-            if len(parts) == 3:
-                parts[0] = 'scene'
-            elif parts[0] == 'movies':
-                parts[0] = 'movie'
-            test = '-'.join(parts)
-        return test
-
-    def searchFixed(self, results, media, lang):
-        def all(iterable):
-            for element in iterable:
-                if not element:
-                    return False
-            return True
-
-        fixed_test = self.urlToId(media.name)
-        fixed_test_parts = [x.strip() for x in fixed_test.split('-', 3)]
-        if len(fixed_test_parts) == 1 or not len(fixed_test_parts[0]):
-            # Default to content mode.
-            fixed_test_parts.insert(0, 'content')
-
-        if fixed_test_parts and all(x.isdigit() for x in fixed_test_parts[1:]):
-            if fixed_test_parts[0] in MODES:
-                self.Log('Given an exact ID: %s, no searching needed.' % fixed_test)
-                self.Log('Working in mode: %s' % fixed_test_parts[0])
-
-                # Fetch HTML for primary:
-                html = self.requestDataHTML('content' if fixed_test_parts[0] != 'movie' else 'movie', fixed_test_parts[1])
-                name = self.getStringContentFromXPath(html, '//h1')
-
-                self.Log('Name of exact ID: %s' % name)
-
-                # Make sure movie ID is correct, should throw otherwise.
-                if fixed_test_parts[0] == 'scene':
-                    self.getStringContentFromXPath(self.requestDataHTML('movie', fixed_test_parts[2]), '//h1')
-
-                # Set the result
-                results.Append(MetadataSearchResult(id = fixed_test, name = name, score = '100', lang = lang))
-                return True
-
-        return False
-
-    def searchScene(self, name, found):
-        # Tested with these:
-        # Alina Li in How to make a cheap porno - Scene 1
-		# How to make a cheap porno - Scene 1
-        # Alina Li - Scene 1 in How to make a cheap porno
-		# Scene 1 - Alina Li in How to make a cheap porno
-		# Scene 1 in How to make a cheap porno
-		# Scene 1 - How to make a cheap porno
-        # Scene 1: How to make a cheap porno
-
-        # Search for a scene in a movie:
-        regex = r"^(?:(?:(?:.+?\s+)?scene\s*(\d+)(?:\s*\W?\s+|\s+))?(?:(?:in|from|at)\s+|.+?\s+(?:in|from|at)\s+)?)?(.+?)(?(1)|(?:\s*\W?\s+|\s+)scene\s*(\d+))$"
-        match = re.search(regex, name, flags=re.I)
-        if not match:
-            self.Log("Scene not found!")
-            return
-
-        # Pull details, create a template: data = [movie, scene, template], Make a search
-        movie_span = match.span(2)
-        data = [match.group(2).strip(), match.group(1) or match.group(3), name[:movie_span[0]] + '%s' + name[movie_span[1]:]]
-        self.Log('Rescue attempt: A scene in a movie? Testing!')
-        self.Log('Scene: {movie = %s, scene = %s, template = %s}' % tuple(data))
-        found.extend(self.doSearch(data[0], data))
-
-    def searchConnection(self, normalizedName, found):
-        # Search for a connection:
-        parts = re.compile(r"\s+in\s+", flags=re.I).split(normalizedName)
-        if len(parts) < 2:
-            return
-
-        second = self.urlQuote(parts[1])
-
-        # Handle multiple performers, branch out to each of them:
-        for first in [self.urlQuote(x.strip()) for x in parts[0].split(',')]:
-            # Pull & visit connections, we limit them or risk super lag:
-            html = self.requestHTML(D18_CONNECTIONS_URL % (first, second))
-            for conn in html.xpath('//div/div/div[p[contains(text(), "Results:")]]/span[position() <= %s]/a/@href' % D18_CONNECTIONS_LIMIT):
-                found.extend(self.doSearchBasic(conn))
-
-    def searchForeign(self, normalizedName, media, results, lang):
-        if not media.filename: return
-        path = urllib.unquote(media.filename)
-        filename = path.split('/')[-1]
-        self.Log("Searching via foreign sites, filename: %s" % filename)
-        splitter = re.compile(r"[\W\_]", re.I)
-        for match in re.findall(r"\[([^\[\]]+)\]", filename, re.I):
-            key = tuple([x.lower() for x in splitter.split(match)])
-            if key not in FOREIGN_DISPATCH: continue
-            self.Log("Searching %s for: %s" % (key, media.name))
-            returned = FOREIGN_DISPATCH[key][0](self, key, normalizedName, lang)
-            if returned:
-                self.Log("found via %s!" % (list(key)))
-                for r in returned: results.Append(r)
-                return True
-        self.Log("not found via foreign sites.")
-        return False
-
-    def search(self, results, media, lang, manual=False):
-        # Handle fixed URLs & IDs.
-        if self.searchFixed(results, media, lang):
-            return
-
-        # Deduce year if not already done.
-        yearFromNamePattern = r'\(\d{4}\)'
-        yearFromName = re.search(yearFromNamePattern, media.name)
-        if not media.year and yearFromName is not None:
-            media.year = yearFromName.group(0)[1:-1]
-            media.name = re.sub(yearFromNamePattern, '', media.name).strip()
-            self.Log('Found the year %s in the name "%s". Using it to narrow search.', media.year, media.name)
-
-        # Clean up year.
-        searchYear = u' (' + safe_unicode(media.year) + u')' if media.year else u''
-
-        # Swap fullwidth and halfwidth replacements of colons, commas, etc.:
-        # - Why Colon? Windows doesn't allow colons.
-        r = [(r, n[0]) for n in REPLACEMENTS.items() for r in n[1]]
-        media.name = reduce(lambda a, e: a.replace(e[0], e[1]), r, media.name.decode("utf-8")).encode('utf-8')
-
-        # Normalize the name:
-        normalizedName = String.StripDiacritics(media.name)
-        if len(normalizedName) == 0:
-            normalizedName = media.name
-
-        # These sites are known to have problems in data18, do special search:
-        if self.searchForeign(normalizedName, media, results, lang):
-        	return
-
-        self.Log('***** SEARCHING FOR "%s"%s - DATA18 v.%s *****', normalizedName, searchYear, VERSION_NO)
-        self.Log('Name (Normalized): "%s", Name(Before): "%s"' % (normalizedName, media.name))
-
-        # Do the search:
-        found = self.doSearch(normalizedName)
-        found2 = media.name.lstrip('0123456789')
-        if normalizedName != found2:
-            found.extend(self.doSearch(found2))
-
-        # Write search result status to log
-        if not found:
-            self.Log('No results found for query "%s"%s', normalizedName, searchYear)
-
-            # Huston, we have a problem: perhaps this a scene in a movie, try to search for the movie instead!
-            self.searchScene(normalizedName, found)
-
-            if not found:
-                # Next: try a connection:
-                self.searchConnection(normalizedName, found)
-        else:
-            self.Log('Found %s result(s) for query "%s"%s', len(found), normalizedName, searchYear)
-            i = 1
-            for f in found:
-                self.Log('    %s. %s [%s] (%s) {%s}', i, f['title'], f['url'], str(f['date']), f['thumb'])
-                i += 1
-
-        self.Log('-----------------------------------------------------------------------')
-        # Walk the found items and gather extended information
-        info = []
-        i = 1
-        for f in found:
-            url = f['url']
-            mode = f['mode']
-            title = f['title']
-            thumb = f['thumb']
-            date = f['date']
-            year = ''
-
-            if re.search(r'http://www\.data18\.com/(?:movies|content)/.+', url) is None:
-                continue
-
-            # Get the id
-            item_id = self.itemId(url)
-            if len(item_id) == 0:
-                continue
-
-            self.Log('* ID is                 %s', item_id)
-
-            # Compute final ID:
-            final_id = [mode, item_id]
-
-            if mode == 'scene':
-                movId = self.itemId(f['movie_url'])
-                if len(item_id) == 0:
-                    continue
-                final_id.append(movId)
-
-            final_id = '-'.join(final_id)
-
-            # Evaluate the score
-            scorebase1 = media.name
-            scorebase2 = title.encode('utf-8')
-
-            if date is not None:
-                year = date.year
-
-            if media.year:
-                scorebase1 += ' (' + media.year + ')'
-                scorebase2 += ' (' + str(year) + ')'
-
-            score = INITIAL_SCORE - Util.LevenshteinDistance(scorebase1, scorebase2)
-
-            self.Log('* Title is              %s', title)
-            self.Log('* Date is               %s', str(date))
-            self.Log('* Score is              %s', str(score))
-
-            if score >= IGNORE_SCORE:
-                info.append({'id': final_id, 'title': title, 'year': year, 'date': date, 'score': score, 'thumb': thumb})
-            else:
-                self.Log('# Score is below ignore boundary (%s)... Skipping!', IGNORE_SCORE)
-
-            if i != len(found):
-                self.Log('-----------------------------------------------------------------------')
-
-            i += 1
-
-        info = sorted(info, key=lambda inf: inf['score'], reverse=True)
-
-        # Output the final results.
-        self.Log('***********************************************************************')
-        self.Log('Final result:')
-        i = 1
-        for r in info:
-            self.Log('    [%s]    %s. %s (%s) {%s} [%s]', r['score'], i, r['title'], r['year'], r['id'], r['thumb'])
-            results.Append(MetadataSearchResult(id = r['id'], name = r['title'] + ' [' + str(r['date']) + ']', score = r['score'], thumb = r['thumb'], lang = lang))
-
-            # If there are more than one result, and this one has a score that is >= GOOD SCORE, then ignore the rest of the results
-            if not manual and len(info) > 1 and r['score'] >= GOOD_SCORE:
-                self.Log('            *** The score for these results are great, so we will use them, and ignore the rest. ***')
-                break
-            i += 1
-
-    def updateDate(self, metadata, date):
-        metadata.originally_available_at = date
-        metadata.year = date.year
-
-    def update(self, metadata, media, lang, force=False):
-        # Set content rating to XXX.
-        metadata.content_rating = 'XXX'
-
-        # Foreign site update:
-        id_parts = metadata.id.split('$', 2)
-        if len(id_parts) > 1:
-            key = tuple(id_parts[0].split('-'))
-            self.Log('***** UPDATING "%s" MODE: %s, ID: %s - DATA18 v.%s *****', media.title, key, id_parts[1], VERSION_NO)
-            FOREIGN_DISPATCH[key][1](self, id_parts[1], metadata, media, lang)
-            self.writeInfo(metadata.tagline, metadata)
-            return
-
-        # extract mode & id.
-        id_parts = metadata.id.split('-', 3)
-        mode, id = id_parts[0:2]
-
-        self.Log('***** UPDATING "%s" MODE: %s, ID: %s - DATA18 v.%s *****', media.title, mode, id, VERSION_NO)
-
-        # Movie or content?
-        is_content, is_movie, is_scene = [x == mode for x in MODES]
-        urlMode = MODES[0:2][int(is_movie)]
-
-        # Make url
-        url = D18_ID_URL[urlMode] % id
-
-        try:
-            # Fetch HTML
-            html = self.requestHTML(url)
-
-            # Set tagline to URL
-            metadata.tagline = url
-
-            # Get the date
-            date = self.findDateInTitle(media.title)
-
-            # Find info div, optimization:
-            rootElem = html.xpath('//div[@class="p8" and .//h1][1]')[0]
-
-            # Set the date and year if found.
-            if date is not None:
-                self.updateDate(metadata, date)
-            else: # try to find release date by other means:
-                dateText = rootElem.xpath('.//p[contains(text(), "Release date")]//text()[last()][1]')[0].split('|')[-1].split(':')[-1].strip()
-                self.updateDate(metadata, self.getDateFromString(dateText))
-
-            # Get the title
-            metadata.title = self.getStringContentFromXPath(rootElem, '//h1')
-            metadata.title_sort = metadata.title
-
-            # If Scene mode, open up movie to get summary, etc.:
-            special_root = self.requestDataHTML('movie', id_parts[2]).xpath('//div[@class="p8" and .//h1][1]')[0] if is_scene else rootElem
-
-            # Set the summary
-            summary_title = ('Story' if is_content else 'Description') + ':'
-            paragraph = special_root.xpath('.//div/p[b[contains(text(),"' + summary_title + '")]]/.')
-            if paragraph:
-                summary = paragraph[0].text_content().strip('\n').strip()
-                summary = re.sub(summary_title, '', summary).strip()
-                metadata.summary = summary
-
-            # Set the studio, series, and director
-            if is_content:
-                # "Site" = Studio
-                xpath = '//i[contains(text(), "Site")]/preceding-sibling::a[contains(@href, "http://www.data18.com/site")][1]/text()'
-                metadata.studio = self.getStringContentFromXPath(html, xpath)
-
-                metadata.collections.clear()
-                xpath = '//i/preceding-sibling::a[contains(@href, "http://www.data18.com/site")][1]/text()'
-                for c in html.xpath(xpath):
-                    metadata.collections.add(c)
-            else:
-                xpath_base = './/p[b[contains(text(),"%s:")]]/a[1]/text()'
-                studio, director, series = [(special_root.xpath(xpath_base % x) or [''])[0].strip() for x in ['Studio', 'Director', 'Serie']]
-                metadata.collections.clear()
-                metadata.directors.clear()
-                if studio: metadata.studio = studio
-                if director: metadata.directors.add(director)
-                if series:
-                    self.Log("Series: %s" % series)
-                    metadata.collections.add(series)
-
-            # Add the genres
-            metadata.genres.clear()
-            genres = rootElem.xpath('.//div[b[contains(text(),"Categories")]]/div/a/text()|//div[b[contains(text(),"Categories:")]]/a/text()')
-            for genre in genres:
-                genre = genre.strip()
-                if genre and re.match(r'View Complete List', genre) is None:
-                    metadata.genres.add(genre)
-
-            # Add the performers
-            metadata.roles.clear()
-            performerXPathBase = 'p[@class="line1"]' if is_movie else 'div/ul/li'
-
-            for performer in rootElem.xpath('.//' + performerXPathBase + '/a/img[@class="yborder"]'):
-                role = metadata.roles.new()
-                role.actor = performer.get('alt').strip()
-
-                # Get the url for performer photo
-                role.photo = re.sub(r'/stars/60/', '/stars/pic/', performer.get('src'))
-
-            # Get posters and fan art.
-            self.getImages(url, rootElem, metadata, is_movie, force)
-        except Exception, e:
-            Log.Error('Error obtaining data for item with id %s (%s) [%s] ', metadata.id, url, e.message)
-            Log.Error( traceback.format_exc() )
-
-        self.writeInfo(url, metadata)
-
-    def hasProxy(self):
-        return Prefs['imageproxyurl'] is not None
-
-    def makeProxyUrl(self, url, referer):
-        return Prefs['imageproxyurl'] + ('?url=%s&referer=%s' % (url, referer))
-
-    def worker(self, queue, stoprequest):
-        while not stoprequest.isSet():
-            try:
-                func, args, kargs = queue.get(True, 0.05)
-                try: func(*args, **kargs)
-                except Exception, e: self.Log(e)
-                queue.task_done()
-            except Queue.Empty:
-                continue
-
-    def addTask(self, queue, func, *args, **kargs):
-        queue.put((func, args, kargs))
-
-    def getImages(self, url, mainHtml, metadata, is_movie, force):
-        queue, stoprequest = self.startImageQueue()
-        results = []
-
-        self.addTask(queue, self.getPosters, url, mainHtml, metadata, results, is_movie, force, queue)
-
-        scene_image_max = 20
-        try:
-            scene_image_max = int(Prefs['sceneimg'])
-        except:
-            Log.Error('Unable to parse the Scene image count setting as an integer.')
-
-        if scene_image_max >= 0:
-            if is_movie:
-                for i, scene in enumerate(mainHtml.xpath('.//div[p//b[contains(text(),"Scene ")]]')):
-                    sceneName = self.getStringContentFromXPath(scene, 'p//b[contains(text(),"Scene ")]')
-                    sceneUrl = self.getAnchorUrlFromXPath(scene, './/a[contains(@href, "go.data18.com") and img]')
-                    if sceneUrl is not None:
-                        #download all the images directly when they are referenced offsite
-                        self.Log('Found scene (%s) - Getting art directly', sceneName)
-                        anchorXPath = './/a[not(contains(@href, "download") ) and img]'
-                        self.addTask(queue, self.getSceneImagesFromAlternate, i, scene, anchorXPath, url, metadata, scene_image_max, results, force, queue)
-                        continue
-
-                    sceneUrl = self.getAnchorUrlFromXPath(scene, './/a[not(contains(@href, "download") ) and img]')
-                    if sceneUrl is None:
-                        continue
-
-                    self.Log('Found scene (%s) - Trying to get fan art from [%s]', sceneName, sceneUrl)
-
-                    self.addTask(queue, self.getSceneImages, i, sceneUrl, metadata, scene_image_max, results, force, queue)
-            else:
-                internalRoot = mainHtml.xpath('.//div[p/b[contains(text(), " images")] and contains(p/text()[normalize-space()][1], "Total:")]')
-                if len(internalRoot) > 0:
-                    internalRoot = internalRoot[0]
-                    # Take the first link, check how many images we have, pull them all directly:
-                    internalCount = int(self.getStringContentFromXPath(internalRoot, './p/b[1]').split(' ', 2)[0])
-                    internalReferer = internalRoot.xpath('.//div[1]/a')[0]
-                    internalRefererBase = internalReferer.get('href').rsplit('/', 2)[0]
-                    internalBaseUrl = '/'.join(internalReferer.xpath('./img')[0].get('src').split('/')[0:-2]) + '/'
-
-                    #padCount = int(math.ceil(math.log10(internalCount)))
-                    padCount = 2
-
-                    for i in range(1, internalCount):
-                        add = str(i).zfill(padCount)
-                        imageUrl = internalBaseUrl + add  + '.jpg'
-                        referer = internalRefererBase + add
-                        self.addTask(queue, self.downloadImage, imageUrl, imageUrl, referer, False, 0, 1, results)
-                else:
-                    pathA = './/div[p[contains(text(), "Video Stills:")] and ./p/a]//a'
-                    pathB = './/div[span[contains(text(), "Quick Timeline:")]]/following::div//li'
-                    paths = pathA + '|' + pathB
-                    self.addTask(queue, self.getSceneImagesFromAlternate, 1, mainHtml, pathA, url, metadata, scene_image_max, results, force, queue)
-
-        self.setImages(queue, stoprequest, metadata, results)
-
-    def getImageSet(self, metadata, tasks):
-        queue, stoprequest = self.startImageQueue(len(tasks))
-        results = []
-        for t in tasks:
-            self.addTask(queue, self.downloadImage, t[0], t[0], t[1], t[2], t[3], t[4], results)
-        self.setImages(queue, stoprequest, metadata, results)
-
-    def startImageQueue(self, limit = THREAD_MAX):
-        queue = Queue.Queue(min(limit, THREAD_MAX))
-        stoprequest = Thread.Event()
-        for _ in range(THREAD_MAX): Thread.Create(self.worker, self, queue, stoprequest)
-        return (queue, stoprequest)
-
-    def setImages(self, queue, stoprequest, metadata, results):
-        queue.join()
-        stoprequest.set()
-        from operator import itemgetter
-        for i, r in enumerate(sorted(results, key=itemgetter('scene', 'index'))):
-            proxy = Proxy.Preview(r['image'], sort_order=i+1) if r['isPreview'] else Proxy.Media(r['image'], sort_order=i+1)
-            if r['scene'] > -1:
-                metadata.art[r['url']] = proxy
-            else:
-                #self.Log('added poster %s (%s)', r['url'], i)
-                metadata.posters[r['url']] = proxy
-
-    def getPosters(self, url, mainHtml, metadata, results, is_movie, force, queue):
-        get_poster_alt = Prefs['posteralt']
-        i = 0
-
-        #get full size posters
-        #for poster in mainHtml.xpath('//a[@data-lightbox="covers"]/@href'):
-        for poster in mainHtml.xpath('//a[@rel="covers"]/@href'):
-            #self.Log('found %s', poster)
-            if 'frontback' in poster:
-                continue
-            if poster in metadata.posters.keys() and not force:
-                continue
-            self.addTask(queue, self.downloadImage, poster, poster, url, False, i, -1, results)
-            i += 1
-        #Check for combined poster image and use alternates if available
-        if get_poster_alt and i == 0:
-            self.getPosterFromAlternate(url, mainHtml, metadata, results, force, queue)
-            i = len(metadata.posters)
-
-        if not is_movie:
-            imageUrl = self.getImageUrlFromXPath(mainHtml, './/*[@id="moviewrap"]/img[contains(@src, "big.jpg")]')
-            self.addTask(queue, self.downloadImage, imageUrl, imageUrl, url, False, i, -1, results)
-
-        #Always get the lower-res poster from the main page that tends to be just the front cover.  This is close to 100% reliable
-        imageUrl = self.getImageUrlFromXPath(mainHtml, '//img[@alt="Cover"]')
-        self.addTask(queue, self.downloadImage, imageUrl, imageUrl, url, False, i, -1, results)
-
-    def getSceneImages(self, sceneIndex, sceneUrl, metadata, sceneImgMax, result, force, queue):
-        sceneHtml = self.requestHTML(sceneUrl)
-        sceneTitle = self.getStringContentFromXPath(sceneHtml, '//h1[@class="h1big"]')
-
-        imgCount = 0
-        images = sceneHtml.xpath('//a[img[contains(@alt,"image")]]/img')
-        if images is not None and len(images) > 0:
-            firstImage = images[0].get('src')
-            thumbPatternSearch = re.search(r'(th\w*)/', firstImage)
-            thumbPattern = None
-            if thumbPatternSearch is not None:
-                thumbPattern = thumbPatternSearch.group(1)
-            #get viewer page
-            firstViewerPageUrl = images[0].xpath('..')[0].get('href')
-            html = self.requestHTML(firstViewerPageUrl)
-
-            imageCount = None
-            imageCountSearch = re.search(r'Image \d+ of (\d+)', html.text_content())
-            if imageCountSearch is not None:
-                imageCount = int(imageCountSearch.group(1))
-            else:
-                # No thumbs were found on the page, which seems to be the case for some scenes where there are only 4 images
-                # so let's just pretend we found thumbs
-                imageCount = 4
-
-            # plex silently dies or kills this off if it downloads too much stuff, especially if there are errors. have to manually limit numbers of images for now
-            # workaround!!!
-            if imageCount > 3:
-                imageCount = 3
-
-            # Find the actual first image on the viewer page
-            imageUrl = self.getImageUrlFromXPath(html, '//div[@id="post_view"]//img')
-
-            # Go through the thumbnails replacing the id of the previous image in the imageUrl on each iteration.
-            for i in range(1,imageCount+1):
-                imgId = '%02d' % i
-                imageUrl = re.sub(r'\d{1,3}.jpg', imgId + '.jpg', imageUrl)
-                thumbUrl = None
-                if thumbPattern is not None:
-                    thumbUrl = re.sub(r'\d{1,3}.jpg', imgId + '.jpg', firstImage)
-
-                if imgCount > sceneImgMax:
-                    #self.Log('Maximum background art downloaded')
-                    break
-                imgCount += 1
-
-                if self.hasProxy():
-                    imgUrl = self.makeProxyUrl(imageUrl, firstViewerPageUrl)
-                    thumbUrl = None
-                else:
-                    imgUrl = imageUrl
-                    thumbUrl = None
-
-                if not imgUrl in metadata.art.keys() or force:
-                    if thumbUrl is not None:
-                        self.addTask(queue, self.downloadImage, thumbUrl, imgUrl, firstViewerPageUrl, True, i, sceneIndex, result)
-                    else:
-                        self.addTask(queue, self.downloadImage, imgUrl, imgUrl, firstViewerPageUrl, False, i, sceneIndex, result)
-
-        if imgCount == 0:
-            # Use the player image from the main page as a backup
-            playerImg = self.getImageUrlFromXPath(sceneHtml, '//img[@alt="Play this Video" or contains(@src,"/hor.jpg")]')
-            if playerImg is not None and len(playerImg) > 0:
-                if self.hasProxy():
-                    img = self.makeProxyUrl(playerImg, sceneUrl)
-                else:
-                    img = playerImg
-
-                if not img in metadata.art.keys() or force:
-                    self.addTask(queue, self.downloadImage, img, img, sceneUrl, False, 0, sceneIndex, result)
-
-    #download the images directly from the main page
-    def getSceneImagesFromAlternate(self, sceneIndex, sceneHtml, xpath, url, metadata, sceneImgMax, result, force, queue):
-        self.Log('Attempting to get art from main page')
-        i = 0
-        for imageUrl in sceneHtml.xpath(xpath + '/img/@src'):
-            if sceneImgMax > 0 and i + 1 > sceneImgMax:
-                break
-
-            if self.hasProxy():
-                imgUrl = self.makeProxyUrl(imageUrl, url)
-            else:
-                imgUrl = imageUrl
-
-            if not imgUrl in metadata.art.keys() or force:
-                #self.Log('Downloading %s', imageUrl)
-                self.addTask(queue, self.downloadImage, imgUrl, imgUrl, url, False, i, sceneIndex, result)
-                i += 1
-
-    def getPosterFromAlternate(self, url, mainHtml, metadata, results, force, queue):
-        provider = ''
-
-        # Prefer AEBN, since the poster seems to be better quality there.
-        altUrl = self.getAnchorUrlFromXPath(mainHtml, './/a[b[contains(text(),"AEBN")]]')
-        if altUrl is not None:
-            provider = 'AEBN'
-        else:
-            provider = 'Data18Store'
-            altUrl = self.getAnchorUrlFromXPath(mainHtml, './/a[contains(text(),"Available for")]')
-
-
-        if altUrl is not None:
-            self.Log('Attempting to get poster from alternative location (%s) [%s]', provider, altUrl)
-
-            providerHtml = self.requestHTML(altUrl)
-            frontImgUrl = None
-            backImgUrl = None
-
-            if provider is 'AEBN':
-                frontImgUrl = self.getAnchorUrlFromXPath(providerHtml, './/div[@id="md-boxCover"]/a[1]')
-                if frontImgUrl is not None:
-                    backImgUrl = frontImgUrl.replace('_xlf.jpg', '_xlb.jpg')
-            else:
-                frontImgUrl = self.getImageUrlFromXPath(providerHtml, './/div[@id="gallery"]//img')
-                if frontImgUrl is not None:
-                    backImgUrl = frontImgUrl.replace('h.jpg', 'bh.jpg')
-
-            if frontImgUrl is not None:
-                if not frontImgUrl in metadata.posters.keys() or force:
-                    self.addTask(queue, self.downloadImage, frontImgUrl, frontImgUrl, altUrl, False, 1, -1, results)
-
-                if not backImgUrl is None and (not backImgUrl in metadata.posters.keys() or force):
-                    self.addTask(queue, self.downloadImage, backImgUrl, backImgUrl, altUrl, False, 2, -1, results)
-                return True
-        return False
-
-    def downloadImage(self, url, referenceUrl, referer, isPreview, index, sceneIndex, results):
-        results.append({'url': referenceUrl, 'image': HTTP.Request(url, cacheTime=0, headers={'Referer': referer}, sleep=REQUEST_DELAY).content, 'isPreview': isPreview, 'index': index, 'scene': sceneIndex})
-
-    def logList(self, what, l, l_loop, cb = lambda e: e):
-    	if len(l) > 0:
-    		self.Log('|\\')
-    		for e in (l_loop or l): self.Log('| * %s:    %s' % (what, cb(e)))
-
-    ### Writes metadata information to log.
-    def writeInfo(self, url, metadata):
-        self.Log('New data')
-        self.Log('-----------------------------------------------------------------------')
-        self.Log('* ID:              %s', metadata.id)
-        self.Log('* URL:             %s', url)
-        self.Log('* Title:           %s', metadata.title)
-        self.Log('* Release date:    %s', str(metadata.originally_available_at))
-        self.Log('* Year:            %s', metadata.year)
-        self.Log('* Studio:          %s', metadata.studio)
-        self.Log('* Director:        %s', metadata.directors[0] if len(metadata.directors) > 0  else '')
-        self.Log('* Tagline:         %s', metadata.tagline)
-        self.Log('* Summary:         %s', metadata.summary)
-        self.logList('Collection', metadata.collections, 0)
-        self.logList('Starring', metadata.roles, 0, lambda e: "%s (%s)" % (e.actor, e.photo))
-        self.logList('Genre', metadata.genres, 0)
-        self.logList('Poster URL', metadata.posters, metadata.posters.keys())
-        self.logList('Fan art URL', metadata.art, metadata.art.keys())
-        self.Log('***********************************************************************')
-
-def safe_unicode(s, encoding='utf-8'):
-    if s is None:
-        return None
-    if isinstance(s, basestring):
-        if isinstance(s, types.UnicodeType):
-            return s
-        else:
-            return s.decode(encoding)
-    else:
-        return str(s).decode(encoding)
+    def update(self, metadata, media, lang, force = False):
+        update(metadata, media, lang, force)

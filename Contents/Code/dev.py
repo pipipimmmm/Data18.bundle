@@ -108,6 +108,16 @@ class String:
     encoded = urllib.parse.urlencode({'v':string})
     return encoded[2:]
 
+  def Unquote(s, usePlus=False):
+    """
+      Replace ``%xx`` escapes by their single-character equivalent. If *usePlus* is ``True``,
+      plus characters are replaced with spaces.
+    """
+    if usePlus:
+      return urllib.parse.unquote_plus(s)
+    else:
+      return urllib.parse.unquote(s)
+
 def request_html(url):
     Log("requesting URL: %s" % url)
 
@@ -150,3 +160,5 @@ def parallelize(f):
 def task(f):
     def decorated(*args, **kwargs): return f(*args, **kwargs)
     return decorated
+
+TrailerObject = namedtuple('TrailerObject', ['url', 'thumb', 'title', 'year', 'originally_available_at'])
