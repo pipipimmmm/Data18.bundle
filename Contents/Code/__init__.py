@@ -951,7 +951,7 @@ def media_proxy(img):
     else:
         return Proxy.Media(content,   sort_order = img.sort_order)
 
-def download_images(metadata, images)
+def download_images(metadata, images):
     @parallelize
     def download_all(metadata = metadata, images = images):
         for img in images:
