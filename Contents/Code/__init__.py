@@ -218,9 +218,9 @@ def disjoint_spans_replace(original, spans):
     accum       = ""
     prev_end    = 0
     for (start, end), instead in sorted(spans, key=lambda span: span[0]):
-        accum   += original[prev_end:start] + instead
+        accum   = accum + original[prev_end:start] + instead
         prev_end = end
-    accum       += original[prev_end:]
+    accum       = accum + original[prev_end:]
     return accum
 
 def match_item_span(match, prefix):
@@ -483,7 +483,7 @@ def compute_score(compare, title, date):
     else:
         Log('compute_score, Found Date = %s' % date)
         # Wrong year must cost a lot in score.
-        score -= math.pow(abs(int(compare.year) - int(date.year)), DATE_SCORE_BASE)
+        score = score - math.pow(abs(int(compare.year) - int(date.year)), DATE_SCORE_BASE)
     return score
 
 def score_sort(found):
@@ -610,7 +610,7 @@ def scene_add_actorscores(scnode, actors):
         scactor = scactor.strip().lower()
         if scactor in actors: ratio = 1
         else: ratio = 1 - min([Util.LevenshteinRatio(sactor, a) for a in actors])
-        score += SCENE_SCORE_ACTOR_ADD * ratio
+        score   = score + SCENE_SCORE_ACTOR_ADD * ratio
     return score
 
 def compute_scene_node(scene_test, html):
@@ -632,7 +632,7 @@ def extract_scene(scene_test, mov_smode, mov_score, mov_title, date):
     r = compute_scene_node(scene_test, html)
     if r:
         node, score = r
-        score += mov_score
+        score = score + mov_score
         try:
             thumb   = image_url_xpath(node, 'EXTRACT_SCENE_THUMB')
             curl    = anchor_xpath(node, 'EXTRACT_SCENE_URL')
@@ -983,7 +983,7 @@ def fetch_poster_main(images, sort_order, referer, html):
         image_url = image_url_xpath(html, 'POSTER_MAIN_MOVIE')
     if not image_url: return sort_order
     images.append(ImageJob(image_url, referer, 'poster', sort_order, False))
-    sort_order += 1
+    sort_order = sort_order + 1
 
 def fetch_photosets(images, sort_order, smode, html):
     if sort_order >= IMAGE_MAX: return sort_order
@@ -1017,7 +1017,7 @@ def fetch_photosets(images, sort_order, smode, html):
         image_url = ubase + '/' + str_index + '.jpg'
         images.append(ImageJob(image_url, referer, 'art', sort_order, False))
 
-        sort_order += 1
+        sort_order = sort_order + 1
 
     return sort_order
 
@@ -1032,7 +1032,7 @@ def fetch_videostills_old(images, sort_order, referer, html):
         if sort_order >= IMAGE_MAX: return sort_order
         image_url = still.get('src').strip()
         images.append(ImageJob(image_url, referer, 'poster', sort_order, False))
-        sort_order += 1
+        sort_order = sort_order + 1
 
     return sort_order
 
@@ -1058,7 +1058,7 @@ def update_images(html, smode, metadata):
 
 def update_tagline(metadata, smode):
     tagline = smode.url()
-    if smode.is_scene(): tagline += ' , ' + smode.scene_mov().url()
+    if smode.is_scene(): tagline = tagline + ' , ' + smode.scene_mov().url()
     metadata.tagline = tagline
 
 def update_date_imm(metadata, date):
