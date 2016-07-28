@@ -52,20 +52,6 @@ D18_PHOTOSET_REF = D18_BASE_URL + 'viewer/%s/01'
 IMAGE_PROXY_URL = Prefs['imageproxyurl']
 IMAGE_MAX       = int(Prefs['sceneimg']  or 10)
 
-class MemoizeDict():
-    def __init__(self, memoizer, initials):
-        self.initials = initials
-        self.memoized = {}
-        self.memoizer = memoizer
-
-    def __getattr__(self, attr):
-        if attr in self.initials:
-            init = self.initials.pop(attr)
-            init = self.memoizer(init)
-            self.memoized[attr] = init
-
-        return self.memoized[attr]
-
 RE_DYN = {
     'DS':           r'(\d)+',
     'WS':           r'\s+',
@@ -81,7 +67,12 @@ RE_DYN = {
     'FIXED_SEARCH': r'(?:http\:\/\/)?(?:www\.)?(?:data18)?(?:\.com)?\/?' +
                     r'(content|movies?|scenes?)/(\d+)(?:/(\d+))?',
 }
-RE     = MemoizeDict(lambda rx: re.compile(rx, flags = re.I), RE_DYN)
+RE_COM = {}
+def RE(attr):
+    if attr in RE_DYN:
+        rx = RE_DYN.pop(attr)
+        RE_COM[attr] = re.compile(rx, flags = re.I)
+    return RE_COM[attr]
 
 XPATHS = {
     # Searching:
@@ -237,7 +228,7 @@ def match_item_span(match, prefix):
     return (item and item[1].strip(), item and match.span(item[0]))
 
 def normalize_ws(string):
-    return RE.WS.sub(' ', string) if string else string
+    return RE('WS').sub(' ', string) if string else string
 
 def try_lam(lam, *args):
     try:    return lam(*args)
@@ -342,7 +333,7 @@ def parse_document_date(html):
 
         try:
             year = xp_first_text(xp(html, 'RELEASE_DATE1'))
-            date = RE.DIGITS8.search(year).group(0)
+            date = RE('DIGITS8').search(year).group(0)
             return date_from_string(curdate)
         except:
             try:
@@ -398,7 +389,7 @@ class SearchMode(object):
 
     @staticmethod
     def from_slug(slug):
-        parts = RE.NOT_ALFAS.split(slug, 2)
+        parts = RE('NOT_ALFAS').split(slug, 2)
 
         if len(parts) < 2: return SearchMode(0, parts[0])
         try:
@@ -427,7 +418,7 @@ def determine_search_fixed(test, c = True):
             return SearchMode(2, test_parts[0], test_parts[1])
 
     log('Attempting search via regex')
-    rmatch = RE.FIXED_SEARCH.match(test)
+    rmatch = RE('FIXED_SEARCH').match(test)
     if not rmatch:
         log('No match with regex')
         return None
@@ -582,7 +573,7 @@ def compute_scene_test(name):
     # Search for a scene in a movie:
     Log("Testing scene search for: %s." % name)
 
-    match = RE.SEARCH_SCENE.match(name)
+    match = RE('SEARCH_SCENE').match(name)
     if not match:
         Log("Regex for scene search didn't match.")
         return
@@ -668,7 +659,7 @@ def search_connection(compare, name):
     Log('Trying connections search.')
     log_section()
 
-    parts = RE.CONN.split(name)
+    parts = RE('CONN').split(name)
     if len(parts) < 2:
         Log('Cant separate query into actor and site.')
         return []
@@ -694,14 +685,14 @@ def search_connection(compare, name):
 # ==============================================================================
 
 def foreign_slug(name):
-    return join_slug(x.lower() for x in RE.WS.split(name))
+    return join_slug(x.lower() for x in RE('WS').split(name))
 
 def make_result_foreign(key, slug, title, thumb, lang):
     id = '%s$%s' % (join_slug(key), slug)
     return [make_result(id, title, 100, thumb, lang)]
 
 def sluggify_name(name):
-    return foreign_slug(RE.NOT_WORD.sub(' ', name))
+    return foreign_slug(RE('NOT_WORD').sub(' ', name))
 
 # ==============================================================================
 # Foreign / Whale network [passion-hd.com, fantasyhd.com, exotic4k.com]
@@ -754,7 +745,7 @@ def fwhale_update_duration(metadata, root):
     if metadata.duration and metadata.duration > 1: return True
     string  = root.xpath('.//p[contains(text(), "Length")]/text()')[0].strip()
     Log(string)
-    search1 = RE.DS_COL_DS.search(string)
+    search1 = RE('DS_COL_DS').search(string)
     if search1:
         data  = list(map(int, search1.groups(0)))
         metadata.duration = compute_duration(0, data[0], data[1])
@@ -942,7 +933,7 @@ def search(results, media, lang, manual = False):
 # ==============================================================================
 
 def photoset_count(html, xpkey):
-    return try_lam(lambda: int(RE.DS.search(string_xpath(html, xpkey)).group(1)))
+    return try_lam(lambda: int(RE('DS').search(string_xpath(html, xpkey)).group(1)))
 
 def media_proxy(img):
     if DEV: return img.url
@@ -1107,7 +1098,7 @@ def update_starring(metadata, html, smode):
     metadata.roles.clear()
     for star in starring:
         name  = normalize_ws(alt_xpath(star, '.'))
-        photo = RE.STAR_PIC.sub('/stars/pic/', image_url_xpath(star, '.'))
+        photo = RE('STAR_PIC').sub('/stars/pic/', image_url_xpath(star, '.'))
         role  = metadata.roles.new()
         role.actor = name
         role.name  = name
@@ -1140,18 +1131,18 @@ def update_duration(metadata, html, smode):
     try:
         string = string_xpath(html, 'DURATION')
         data   = [0, 0, 0]
-        search1     = RE.H_M_S.search(string)
+        search1     = RE('H_M_S').search(string)
         if search1:
             data    = list(map(int, search1.groups(0)))
         else:
-            data[1] = int(RE.DS.search(string).group(1))
+            data[1] = int(RE('DS').search(string).group(1))
 
         metadata.duration = compute_duration(*data)
         return True
     except:
         string   = string_xpath(html, 'DURATION2')
         if not string: return None
-        match    = RE.MIN_SEC.search(string).groups(0)
+        match    = RE('MIN_SEC').search(string).groups(0)
         duration = compute_duration(0, int(match[0]), int(match[1]))
         metadata.duration = duration
         return True
