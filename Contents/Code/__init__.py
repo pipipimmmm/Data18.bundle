@@ -832,7 +832,6 @@ def search_foreign(results, media, normalized, lang):
 
     Log("Not found via foreign sites.")
     log_section()
-    exit()
     return False
 
 # ==============================================================================
