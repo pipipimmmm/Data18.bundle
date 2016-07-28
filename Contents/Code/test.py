@@ -166,6 +166,7 @@ UTESTS  = ['http://www.data18.com/movies/1148631',                       #  0
            'http://www.data18.com/content/159593',                       #  24
            'http://www.data18.com/movies/1147862']                       #  25
 
-#UPDATE_TEST(25)
+#SEARCH_TEST(1)
+#UPDATE_TEST(1)
 #FSEARCH_TEST(1)
-FUPDATE_TEST(1)
+#FUPDATE_TEST(1)

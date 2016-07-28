@@ -38,11 +38,6 @@ REPLACEMENTS = {':': [u"\uff1a", u"\uA789"], '-': [u"\u2014"], '.': [u"\uFE52"]}
 
 D18_MODE_STRINGS = ['content', 'movies', 'scenes']
 
-# Let's be super fault tolerant in accepted input:
-D18_FIXED_SEARCH = re.compile(
-    r'(?:http\:\/\/)?(?:www\.)?(?:data18)?(?:\.com)?\/?' +
-    r'(content|movies?|scenes?)/(\d+)(?:/(\d+))?', flags = re.I)
-
 D18_BASE_URL     = 'http://www.data18.com/'
 D18_MOVIE_INFO   = D18_BASE_URL + 'movies/%s'
 D18_CONTENT_INFO = D18_BASE_URL + 'content/%s'
@@ -56,10 +51,6 @@ D18_PHOTOSET_REF = D18_BASE_URL + 'viewer/%s/01'
 
 IMAGE_PROXY_URL = Prefs['imageproxyurl']
 IMAGE_MAX       = int(Prefs['sceneimg']  or 10)
-
-REGEX   = {
-    'CONN': re.compile(r"\s+in\s+", flags = re.I),
-}
 
 class MemoizeDict():
     def __init__(self, memoizer, initials):
@@ -75,11 +66,24 @@ class MemoizeDict():
 
         return self.memoized[attr]
 
-RE = MemoizeDict(lambda rx: re.compile(rx, flags = re.I), {
-    'CONN': r"\s+in\s+",
-})
+RE_DYN = {
+    'DS':           r'(\d)+',
+    'WS':           r'\s+',
+    'DIGIS8':       r'(\d{8})',
+    'NOT_ALFAS':    r'[^a-zA-Z0-9]',
+    'NOT_WORD':     r"[\W\_]+",
+    'DS_COL_DS':    r'(\d+)\:(\d+)',
+    'STAR_PIC':     r'/stars/[^/]+/',
+    'H_M_S':        r'(\d+)\:(\d+)(?:\:(\d))?',
+    'MIN_SEC':      r'(\d+)\s*mins?,?\s*(\d+)\s*secs?',
+    'CONN':         r"\s+in\s+",
+    # Let's be super fault tolerant in accepted input:
+    'FIXED_SEARCH': r'(?:http\:\/\/)?(?:www\.)?(?:data18)?(?:\.com)?\/?' +
+                    r'(content|movies?|scenes?)/(\d+)(?:/(\d+))?',
+}
+RE     = MemoizeDict(lambda rx: re.compile(rx, flags = re.I), RE_DYN)
 
-XPATHS2 = {
+XPATHS = {
     # Searching:
     'SEARCH_CONTENT':  '//div[div/p/a/img[@class="yborder"]]',
     'SEARCH_MOVIE':    '//div[a/img[@class="yborder"]]',
@@ -169,7 +173,7 @@ ImageJob    = namedtuple('ImageJob',
 # ==============================================================================
 
 def xpmod(xpkey, *args):
-    x = XPATHS2[xpkey]
+    x = XPATHS[xpkey]
     return x % args if args else x
 
 def xp(node, xpkey = None, *args):
@@ -233,8 +237,7 @@ def match_item_span(match, prefix):
     return (item and item[1].strip(), item and match.span(item[0]))
 
 def normalize_ws(string):
-    RE = re.compile(r'\s+')
-    return RE.sub(' ', string) if string else string
+    return RE.WS.sub(' ', string) if string else string
 
 def try_lam(lam, *args):
     try:    return lam(*args)
@@ -339,7 +342,7 @@ def parse_document_date(html):
 
         try:
             year = xp_first_text(xp(html, 'RELEASE_DATE1'))
-            date = re.search(r'(\d{8})', year).group(0)
+            date = RE.DIGITS8.search(year).group(0)
             return date_from_string(curdate)
         except:
             try:
@@ -395,8 +398,7 @@ class SearchMode(object):
 
     @staticmethod
     def from_slug(slug):
-        RE = re.compile(r'[^a-zA-Z0-9]', flags = re.I)
-        parts = RE.split(slug, 2)
+        parts = RE.NOT_ALFAS.split(slug, 2)
 
         if len(parts) < 2: return SearchMode(0, parts[0])
         try:
@@ -424,13 +426,13 @@ def determine_search_fixed(test, c = True):
             log('Search needle is <id>/<id>, assuming: scene/<content-id>/<movie-id>')
             return SearchMode(2, test_parts[0], test_parts[1])
 
-    log('Attempting search via regex, D18_FIXED_SEARCH')
-    rmatch = D18_FIXED_SEARCH.match(test)
+    log('Attempting search via regex')
+    rmatch = RE.FIXED_SEARCH.match(test)
     if not rmatch:
         log('No match with regex')
         return None
 
-    log('Found via regex, D18_FIXED_SEARCH')
+    log('Found via regex')
     (mode, id, sid) = rmatch.groups()
     try:
         mode = 0 if sid else D18_MODE_STRINGS.index(mode)
@@ -572,16 +574,15 @@ def build_scene_regex():
     re_F   = re_STA(6) + re_PRO + re_MOV(6)
     re_G   = re_NOL(7) + re_MOV(7)
     regex  = r"^(?:%s)$" % r"|".join([re_A, re_B, re_C, re_D, re_E, re_F, re_G])
-    return re.compile(regex, flags = re.I)
+    return regex
 
-REGEX['SEARCH_SCENE'] = build_scene_regex()
-
+RE_DYN['SEARCH_SCENE'] = build_scene_regex()
 
 def compute_scene_test(name):
     # Search for a scene in a movie:
     Log("Testing scene search for: %s." % name)
 
-    match = REGEX['SEARCH_SCENE'].match(name)
+    match = RE.SEARCH_SCENE.match(name)
     if not match:
         Log("Regex for scene search didn't match.")
         return
@@ -590,9 +591,9 @@ def compute_scene_test(name):
     scene, sspan = match_item_span(match, "scene")
     actor, aspan = match_item_span(match, "actor")
 
-    print(" * movie:    \t" + str(movie))
-    print(" * scene:    \t" + str(scene))
-    print(" * actor:    \t" + str(actor))
+    Log(" * movie:    \t" + str(movie))
+    Log(" * scene:    \t" + str(scene))
+    Log(" * actor:    \t" + str(actor))
 
     if not movie or not (scene or actor):
         Log("Irrecoverable error: no movie or neither of scene and actor found")
@@ -602,7 +603,7 @@ def compute_scene_test(name):
     if sspan: replaces.append((sspan, "{scene}"))
     if aspan: replaces.append((aspan, "{actor}"))
     template = disjoint_spans_replace(name, replaces)
-    print(" * template: \t"+ str(template))
+    Log(" * template: \t"+ str(template))
     log_section()
 
     return SearchSceneTest(name, movie, scene, actor, template)
@@ -639,11 +640,11 @@ def extract_scene(scene_test, mov_smode, mov_score, mov_title, date):
         try:
             thumb   = image_url_xpath(node, 'EXTRACT_SCENE_THUMB')
             curl    = anchor_xpath(node, 'EXTRACT_SCENE_URL')
-            smode   = determine_search_fixed(content_url, False).combine(mov_smode)
+            smode   = determine_search_fixed(curl, False).combine(mov_smode)
             title   = scene_test.template.format(movie = mov_title,
                                                  scene = scene_test.scene,
                                                  actor = scene_test.actor)
-            ftitle  = format_search_title(scene_title, date, [network, site, studio])
+            ftitle  = format_search_title(title, date, [network, site, studio])
             return TempResult(score, smode, smode.url(), title, date, thumb,
                               site, network, studio, ftitle)
         except:
@@ -667,10 +668,10 @@ def search_connection(compare, name):
     Log('Trying connections search.')
     log_section()
 
-    parts = REGEX['CONN'].split(name)
+    parts = RE.CONN.split(name)
     if len(parts) < 2:
         Log('Cant separate query into actor and site.')
-        return
+        return []
 
     # Take the first actor and the website name to search +
     # NA site, Pull & visit connections:
@@ -693,14 +694,14 @@ def search_connection(compare, name):
 # ==============================================================================
 
 def foreign_slug(name):
-    return join_slug(x.lower() for x in re.split(r'\s+', name, 0, re.I))
+    return join_slug(x.lower() for x in RE.WS.split(name))
 
 def make_result_foreign(key, slug, title, thumb, lang):
     id = '%s$%s' % (join_slug(key), slug)
     return [make_result(id, title, 100, thumb, lang)]
 
 def sluggify_name(name):
-    return foreign_slug(re.sub(r"[\W\_]+", ' ', name, 0, re.I))
+    return foreign_slug(RE.NOT_WORD.sub(' ', name))
 
 # ==============================================================================
 # Foreign / Whale network [passion-hd.com, fantasyhd.com, exotic4k.com]
@@ -753,7 +754,7 @@ def fwhale_update_duration(metadata, root):
     if metadata.duration and metadata.duration > 1: return True
     string  = root.xpath('.//p[contains(text(), "Length")]/text()')[0].strip()
     Log(string)
-    search1 = re.search(r'(\d+)\:(\d+)?', string)
+    search1 = RE.DS_COL_DS.search(string)
     if search1:
         data  = list(map(int, search1.groups(0)))
         metadata.duration = compute_duration(0, data[0], data[1])
@@ -941,8 +942,7 @@ def search(results, media, lang, manual = False):
 # ==============================================================================
 
 def photoset_count(html, xpkey):
-    return try_lam(lambda:
-                   int(re.search(r'(\d+)', string_xpath(html, xpkey)).group(1)))
+    return try_lam(lambda: int(RE.DS.search(string_xpath(html, xpkey)).group(1)))
 
 def media_proxy(img):
     if DEV: return img.url
@@ -1107,8 +1107,7 @@ def update_starring(metadata, html, smode):
     metadata.roles.clear()
     for star in starring:
         name  = normalize_ws(alt_xpath(star, '.'))
-        photo = image_url_xpath(star, '.')
-        photo = re.sub(r'/stars/[^/]+/', '/stars/pic/', photo)
+        photo = RE.STAR_PIC.sub('/stars/pic/', image_url_xpath(star, '.'))
         role  = metadata.roles.new()
         role.actor = name
         role.name  = name
@@ -1141,20 +1140,18 @@ def update_duration(metadata, html, smode):
     try:
         string = string_xpath(html, 'DURATION')
         data   = [0, 0, 0]
-        search1     = re.search(r'(\d+)\:(\d+)(?:\:(\d))?', string)
+        search1     = RE.H_M_S.search(string)
         if search1:
             data    = list(map(int, search1.groups(0)))
         else:
-            data[1] = int(re.search(r'(\d+)', string).group(1))
+            data[1] = int(RE.DS.search(string).group(1))
 
         metadata.duration = compute_duration(*data)
         return True
     except:
         string   = string_xpath(html, 'DURATION2')
         if not string: return None
-        Log(string)
-        RE = re.compile(r'(\d+)\s*mins?,?\s*(\d+)\s*secs?', flags = re.I)
-        match    = RE.search(string).groups(0)
+        match    = RE.MIN_SEC.search(string).groups(0)
         duration = compute_duration(0, int(match[0]), int(match[1]))
         metadata.duration = duration
         return True
@@ -1204,7 +1201,7 @@ def update(metadata, media, lang, force = False):
 
     # Set basic stuff:
     metadata.id = smode.slug()
-    update_rating()
+    update_rating(metadata)
     update_tagline(metadata, smode)
 
     html  = request_data_html(smode.mode, smode.id)
