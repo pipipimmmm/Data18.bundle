@@ -408,8 +408,13 @@ class SearchMode(object):
 def determine_search_fixed(test, c = True):
     def log(s): clog(c, s)
 
+    def all_hack(iterable):
+        for element in iterable:
+            if not element: return False
+        return True
+
     test_parts = test.rsplit('/')
-    if all(x.isdigit() for x in test_parts):
+    if all_hack(x.isdigit() for x in test_parts):
         if len(test_parts) == 1:
             log('Search needle is numeric, assuming: content/<id>')
             return SearchMode(0, test_parts[0], None)
