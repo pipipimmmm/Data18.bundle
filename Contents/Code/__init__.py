@@ -1211,6 +1211,7 @@ def update_foreign(metadata, media, lang):
     return True
 
 def update(metadata, media, lang, force = False):
+    Log("test")
     log_metadata(metadata, "Current metadata:")
     if update_foreign(metadata, media, lang): return
 
