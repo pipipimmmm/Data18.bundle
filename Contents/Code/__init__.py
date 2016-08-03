@@ -974,12 +974,13 @@ def download_images(metadata, images):
             if DEV: download_one()
     if DEV: download_all()
 
-def log_image_max(fn):
-    Log("Reached IMAGE_MAX (= %s) in %s. STOP" % (IMAGE_MAX, fn))
+def image_max_overflow(curr, fn):
+    if IMAGE_MAX == 0 or curr < IMAGE_MAX: return False
+    Log("Reached IMAGE_MAX (= %s) in %s. STOPPING!" % (IMAGE_MAX, fn))
+    return True
 
 def fetch_poster_main(images, sort_order, referer, html):
-    if sort_order >= IMAGE_MAX:
-        log_image_max('fetch_poster_main')
+    if image_max_overflow(sort_order, 'fetch_poster_main'):
         return sort_order
 
     image_url     = image_url_xpath(html, 'POSTER_MAIN')
@@ -991,8 +992,7 @@ def fetch_poster_main(images, sort_order, referer, html):
     sort_order = sort_order + 1
 
 def fetch_photosets(images, sort_order, smode, html):
-    if sort_order >= IMAGE_MAX:
-        log_image_max('fetch_photosets #1')
+    if image_max_overflow(sort_order, 'fetch_photosets #1'):
         return sort_order
 
     # Get count:
@@ -1014,13 +1014,11 @@ def fetch_photosets(images, sort_order, smode, html):
     else:
         ubase = image_url_xpath(html, 'PHOTOSET_LIST')
 
-    ubase = ubase.split('/')[:-2]
-    ubase = '/'.join(ubase)
+    ubase = '/'.join(ubase.split('/')[:-2])
 
     # Add the images:
     for idx in range(1, count):
-        if sort_order >= IMAGE_MAX:
-            log_image_max("fetch_photosets #2")
+        if image_max_overflow(sort_order, 'fetch_photosets #2'):
             return sort_order
 
         str_index = '0' + str(idx) if idx < 10 else str(idx)
@@ -1033,16 +1031,14 @@ def fetch_photosets(images, sort_order, smode, html):
 
 # Old videostills:
 def fetch_videostills_old(images, sort_order, referer, html):
-    if sort_order >= IMAGE_MAX:
-        log_image_max("fetch_videostills_old #1")
+    if image_max_overflow(sort_order, 'fetch_videostills_old #1'):
         return sort_order
 
     vidstills = xp(html, 'VIDEOSTILLS_OLD') or xp(html, 'QUICKTIMELINE_OLD')
     if not vidstills: return sort_order
 
     for still in vidstills:
-        if sort_order >= IMAGE_MAX:
-            log_image_max("fetch_videostills_old #2")
+        if image_max_overflow(sort_order, 'fetch_videostills_old #2'):
             return sort_order
 
         image_url = still.get('src').strip()
