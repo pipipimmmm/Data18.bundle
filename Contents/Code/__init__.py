@@ -165,6 +165,7 @@ ImageJob    = namedtuple('ImageJob',
 
 def xpmod(xpkey, *args):
     x = XPATHS[xpkey]
+    Log("xpmod: " + (x % args if args else x))
     return x % args if args else x
 
 def xp(node, xpkey = None, *args):
@@ -560,7 +561,7 @@ def build_scene_regex():
     re_STA = lambda s: r"(?P<actor%s>(?:\b[\w]+\b[,\s]*)+?\b[\w]+\b)" % s
     def re_MOV(m, greedy = True):
         g = r"*" if greedy else r"+?"
-        return r"(?P<movie%s>(?:\b[\w#\.]+\b[,\s]*)%s\b[\w#\.]+\b)" % (m, g)
+        return r"(?P<movie%s>(?:\b[\w#\.\-]+\b[,\s]*)%s\b[\w#\.\-]+\b)" % (m, g)
 
     re_A   = re_STA(1) + re_PRO + re_MOV(1, False) + re_NOR(1)
     re_B   = re_STA(2) + re_NOR(2) + re_PRO + re_MOV(2)
@@ -623,11 +624,15 @@ def compute_scene_node(scene_test, html):
         nodes = []
         for n in xp(html, 'SEARCH_SCENES', ""):
             nodes.append((n, scene_add_actorscores(n, actors)))
-        return next(sorted(nodes, key = lambda e: e[1], reverse = True), None)
+
+        nodes = sorted(nodes, key = lambda e: e[1], reverse = True)
+        return nodes[0] if nodes else None
 
     return None
 
 def extract_scene(scene_test, mov_smode, mov_score, mov_title, date):
+    Log([scene_test, mov_smode, mov_title])
+
     html, site, network, studio = movie_html_extras(mov_smode)
     r = compute_scene_node(scene_test, html)
     if r:
