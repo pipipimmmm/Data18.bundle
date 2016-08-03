@@ -114,7 +114,8 @@ FTESTS  = [('[Fantasy HD] [August Ames] Handcuffed Hottie', 'Handcuffed Hottie')
            ('[Exotic4k] DD Devyn Divine', 'DD Devyn Divine'),
            ('[Exotic 4K] Oil & Ice', 'Oil & Ice')]
 FUTESTS = ['fantasy-hd$handcuffed-hottie',
-           'exotic4k$dd-devyn-divine']
+           'exotic4k$dd-devyn-divine',
+           'exotic4k$oil-ice']
 
 STESTS  = ["Jillian Janson in My Sister's Hot Friend",                   #  0
           'Kimber Woods in Buttsex Cuties - Scene 1',                    #  1
@@ -141,7 +142,6 @@ STESTS  = ["Jillian Janson in My Sister's Hot Friend",                   #  0
           'scenes/1145979/1146336',                                      #  22
           'http://www.data18.com/content/5422345',                       #  23
           'Anna Bell Peaks in Squirt-a-holic - Scene 3']                 #  24
-
 
 UTESTS  = ['http://www.data18.com/movies/1148631',                       #  0
            'http://www.data18.com/scenes/5423315-1148631',               #  1
@@ -173,5 +173,5 @@ UTESTS  = ['http://www.data18.com/movies/1148631',                       #  0
 
 #SEARCH_TEST(1)
 #UPDATE_TEST(1)
-#FSEARCH_TEST(1)
-#FUPDATE_TEST(1)
+#FSEARCH_TEST(2)
+#FUPDATE_TEST(2)

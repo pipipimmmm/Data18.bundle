@@ -728,9 +728,13 @@ def fwhale_search(url_base, studio, key, name, lang):
     title  = fwhale_title(root)
     ftitle = format_search_title(title, date, [studio])
     thumb  = fwhale_poster(root)
-    log_found([TempResult(100,  None, url,    title, date, thumb,
-                          None, None, studio, ftitle)], name, date.year)
-    return make_result_foreign(key, sluggify_name(name), ftitle, lang, thumb)
+    slug   = sluggify_name(name)
+
+    temp   = TempResult(100,  slug, url,    title, date, thumb,
+                          None, None, studio, ftitle)
+    log_found([temp], name, date.year)
+
+    return make_result_foreign(key, slug, ftitle, lang, thumb)
 
 def fwhale_update_title(metadata, root):
     metadata.title = fwhale_title(root)
