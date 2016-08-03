@@ -111,7 +111,8 @@ def FSEARCH_TEST(test):
 def FUPDATE_TEST(test): UPDATE_TEST_BASE(FUTESTS[test])
 
 FTESTS  = [('[Fantasy HD] [August Ames] Handcuffed Hottie', 'Handcuffed Hottie'),
-           ('[Exotic4k] DD Devyn Divine', 'DD Devyn Divine')]
+           ('[Exotic4k] DD Devyn Divine', 'DD Devyn Divine'),
+           ('[Exotic 4K] Oil & Ice', 'Oil & Ice')]
 FUTESTS = ['fantasy-hd$handcuffed-hottie',
            'exotic4k$dd-devyn-divine']
 

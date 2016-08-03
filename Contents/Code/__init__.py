@@ -631,8 +631,6 @@ def compute_scene_node(scene_test, html):
     return None
 
 def extract_scene(scene_test, mov_smode, mov_score, mov_title, date):
-    Log([scene_test, mov_smode, mov_title])
-
     html, site, network, studio = movie_html_extras(mov_smode)
     r = compute_scene_node(scene_test, html)
     if r:
@@ -797,7 +795,6 @@ def fwhale_site(studio, base_url):
             partial(fwhale_update, base_url, studio)]
 
 FOREIGN_DISPATCH = {
-    ('colette',):      1,#[site_colette_search, site_colette_update],
     ('fantasy', 'hd'): fwhale_site('Fantasy HD', 'fantasyhd.com'),
     ('exotic4k',):     fwhale_site('Exotic4k',   'exotic4k.com'),
     ('passion', 'hd'): fwhale_site('Passion HD', 'passion-hd.com'),
@@ -814,19 +811,21 @@ def search_foreign(results, media, normalized, lang):
     log_section()
     Log("Searching via foreign sites, filename: %s" % filename)
 
-
     splitter = re.compile(r"[\W\_]", re.I)
     brackets = re.compile(r"\[([^\[\]]+)\]", re.I)
 
     for match in brackets.findall(filename):
-        key = tuple([x.lower() for x in splitter.split(match)])
-        if key not in FOREIGN_DISPATCH: continue
+        parts = [x.lower() for x in splitter.split(match)]
+        key   = tuple(parts)
+        if key not in FOREIGN_DISPATCH:
+            key = tuple([''.join(parts)])
+            if key not in FOREIGN_DISPATCH: continue
 
         Log("Searching %s for: %s" % (key, media.name))
 
         returned = FOREIGN_DISPATCH[key][0](key, normalized, lang)
         if returned:
-            Log("found via %s!" % (list(key)))
+            Log("Found via %s!" % (list(key)))
             for r in returned: results.Append(r)
             return True
             log_section()
