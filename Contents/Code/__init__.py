@@ -974,17 +974,26 @@ def download_images(metadata, images):
             if DEV: download_one()
     if DEV: download_all()
 
+def log_image_max(fn):
+    Log("Reached IMAGE_MAX (= %s) in %s. STOP" % (IMAGE_MAX, fn))
+
 def fetch_poster_main(images, sort_order, referer, html):
-    if sort_order >= IMAGE_MAX: return sort_order
+    if sort_order >= IMAGE_MAX:
+        log_image_max('fetch_poster_main')
+        return sort_order
+
     image_url     = image_url_xpath(html, 'POSTER_MAIN')
     if not image_url:
         image_url = image_url_xpath(html, 'POSTER_MAIN_MOVIE')
+
     if not image_url: return sort_order
     images.append(ImageJob(image_url, referer, 'poster', sort_order, False))
     sort_order = sort_order + 1
 
 def fetch_photosets(images, sort_order, smode, html):
-    if sort_order >= IMAGE_MAX: return sort_order
+    if sort_order >= IMAGE_MAX:
+        log_image_max('fetch_photosets #1')
+        return sort_order
 
     # Get count:
     referer = D18_PHOTOSET_REF % smode.id
@@ -1010,7 +1019,10 @@ def fetch_photosets(images, sort_order, smode, html):
 
     # Add the images:
     for idx in range(1, count):
-        if sort_order >= IMAGE_MAX: return sort_order
+        if sort_order >= IMAGE_MAX:
+            log_image_max("fetch_photosets #2")
+            return sort_order
+
         str_index = '0' + str(idx) if idx < 10 else str(idx)
         image_url = ubase + '/' + str_index + '.jpg'
         images.append(ImageJob(image_url, referer, 'art', sort_order, False))
@@ -1021,13 +1033,18 @@ def fetch_photosets(images, sort_order, smode, html):
 
 # Old videostills:
 def fetch_videostills_old(images, sort_order, referer, html):
-    if sort_order >= IMAGE_MAX: return sort_order
+    if sort_order >= IMAGE_MAX:
+        log_image_max("fetch_videostills_old #1")
+        return sort_order
 
     vidstills = xp(html, 'VIDEOSTILLS_OLD') or xp(html, 'QUICKTIMELINE_OLD')
     if not vidstills: return sort_order
 
     for still in vidstills:
-        if sort_order >= IMAGE_MAX: return sort_order
+        if sort_order >= IMAGE_MAX:
+            log_image_max("fetch_videostills_old #2")
+            return sort_order
+
         image_url = still.get('src').strip()
         images.append(ImageJob(image_url, referer, 'poster', sort_order, False))
         sort_order = sort_order + 1
