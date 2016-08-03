@@ -55,7 +55,7 @@ IMAGE_MAX       = int(Prefs['sceneimg']  or 10)
 RE_DYN = {
     'DS':           r'(\d)+',
     'WS':           r'\s+',
-    'DIGIS8':       r'(\d{8})',
+    'DIGITS8':       r'(\d{8})',
     'NOT_ALFAS':    r'[^a-zA-Z0-9]',
     'NOT_WORD':     r"[\W\_]+",
     'DS_COL_DS':    r'(\d+)\:(\d+)',
@@ -340,7 +340,7 @@ def parse_document_date(html):
                 date = xp_first_text(xp(html, 'RELEASE_DATE2'))
                 return date_from_string(date)
             except:
-                date = xp_first_text(xp(html, 'RELEASE_DATE2'))
+                date = xp_first_text(xp(html, 'RELEASE_DATE3'))
                 return date_from_string(date)
     except:
         string  = xp_first_text(xp(html, 'RELEASE_DATEM'))

@@ -137,7 +137,8 @@ STESTS  = ["Jillian Janson in My Sister's Hot Friend",                   #  0
           'movie/1145979',                                               #  19
           'scene/1145979',                                               #  20
           'scenes/1145979/1146336',                                      #  21
-          'scenes/1145979/1146336']                                      #  22
+          'scenes/1145979/1146336',                                      #  22
+          'http://www.data18.com/content/5422345']                       #  23
 
 UTESTS  = ['http://www.data18.com/movies/1148631',                       #  0
            'http://www.data18.com/scenes/5423315-1148631',               #  1
