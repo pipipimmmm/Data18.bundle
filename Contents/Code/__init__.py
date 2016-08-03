@@ -695,9 +695,9 @@ def search_connection(compare, name):
 def foreign_slug(name):
     return join_slug(x.lower() for x in RE('WS').split(name))
 
-def make_result_foreign(key, slug, title, thumb, lang):
-    slug = '11111' #% (FOREIGN_INDEX.index(key), slug)
-    return [make_result(slug, title, 100, thumb, lang)]
+def make_result_foreign(key, slug, title, lang, thumb):
+    id = '%s$%s' % (join_slug(key), slug)
+    return [make_result(id, title, 100, lang, thumb)]
 
 def sluggify_name(name):
     return foreign_slug(RE('NOT_WORD').sub(' ', name))
@@ -730,10 +730,10 @@ def fwhale_search(url_base, studio, key, name, lang):
     thumb  = fwhale_poster(root)
     slug   = sluggify_name(name)
 
-    temp   = TempResult(100,  slug, url,    title, date, thumb,
-                          None, None, studio, ftitle)
+    temp   = TempResult(100, slug, url, title, date, thumb,
+                        None, None, studio, ftitle)
     log_found([temp], name, date.year)
-
+ 
     return make_result_foreign(key, slug, ftitle, lang, thumb)
 
 def fwhale_update_title(metadata, root):
@@ -805,12 +805,6 @@ FOREIGN_DISPATCH = {
     ('my', 'very', 'first', 'time'):
                        fwhale_site('My Very First Time', 'myveryfirsttime.com')
 }
-
-FOREIGN_INDEX = [
-    ('fantasy', 'hd'),
-    ('exotic4k',),
-    ('passion', 'hd'),
-    ('my', 'very', 'first', 'time')]
 
 def search_foreign(results, media, normalized, lang):
     if not media.filename: return
@@ -1217,7 +1211,6 @@ def update_foreign(metadata, media, lang):
     return True
 
 def update(metadata, media, lang, force = False):
-    Log("test")
     log_metadata(metadata, "Current metadata:")
     if update_foreign(metadata, media, lang): return
 
