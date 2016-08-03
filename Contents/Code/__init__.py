@@ -969,7 +969,7 @@ def download_images(metadata, images):
                 elif typ == 'banner':
                     metadata.banners[url] = media_proxy(img)
 
-            if DEV: downloader(metadata, img)
+            if DEV: download_one(metadata, img)
     if DEV: download_all(metadata, images)
 
 def fetch_poster_main(images, sort_order, referer, html):
@@ -1095,10 +1095,10 @@ def update_genres(metadata, html, smode):
 
 def add_role(metadata, actor, photo = None):
     role       = metadata.roles.new()
-    role.name  = name
+    role.name  = actor
     role.photo = photo
     try:
-        role.actor = name
+        role.actor = actor
     except: pass
 
 def update_starring(metadata, html, smode):
