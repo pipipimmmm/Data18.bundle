@@ -696,7 +696,7 @@ def foreign_slug(name):
     return join_slug(x.lower() for x in RE('WS').split(name))
 
 def make_result_foreign(key, slug, title, thumb, lang):
-    id = '%s%s' % (join_slug(key), slug)
+    id = 'foreign-%s-%s' % (FOREIGN_INDEX.index(key), slug)
     return [make_result(id, title, 100, thumb, lang)]
 
 def sluggify_name(name):
@@ -805,6 +805,12 @@ FOREIGN_DISPATCH = {
     ('my', 'very', 'first', 'time'):
                        fwhale_site('My Very First Time', 'myveryfirsttime.com')
 }
+
+FOREIGN_INDEX = [
+    ('fantasy', 'hd'),
+    ('exotic4k',),
+    ('passion', 'hd'),
+    ('my', 'very', 'first', 'time')]
 
 def search_foreign(results, media, normalized, lang):
     if not media.filename: return
