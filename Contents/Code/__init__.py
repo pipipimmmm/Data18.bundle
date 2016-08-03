@@ -212,7 +212,8 @@ def join_slug(parts): return '-'.join(parts)
 
 def dict_first_prefix_key(g, prefix):
     pres = filter(lambda e: e[0].startswith(prefix), g)
-    return next(filter(lambda e: e[1], pres), None)
+    filt = list(filter(lambda e: e[1], pres))
+    return filt[0] if filt else None
 
 def disjoint_spans_replace(original, spans):
     if not spans: return original
