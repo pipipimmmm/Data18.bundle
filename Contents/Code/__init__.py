@@ -165,7 +165,7 @@ ImageJob    = namedtuple('ImageJob',
 
 def xpmod(xpkey, *args):
     x = XPATHS[xpkey]
-    Log("xpmod: " + (x % args if args else x))
+    #Log("xpmod: " + (x % args if args else x))
     return x % args if args else x
 
 def xp(node, xpkey = None, *args):
@@ -1212,7 +1212,6 @@ def update_foreign(metadata, media, lang):
     return True
 
 def update(metadata, media, lang, force = False):
-    log_metadata(metadata, "Current metadata:")
     if update_foreign(metadata, media, lang): return
 
     smode = SearchMode.from_slug(metadata.id)
