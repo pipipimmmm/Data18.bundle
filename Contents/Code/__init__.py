@@ -829,7 +829,8 @@ def search_foreign(results, media, normalized, lang):
 
         returned = FOREIGN_DISPATCH[key][0](key, normalized, lang)
         if returned:
-            Log("Found via %s!" % (list(key)))
+            Log("Found via %s!" % (key,))
+            Log(returned)
             for r in returned: results.Append(r)
             return True
             log_section()
