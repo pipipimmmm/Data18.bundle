@@ -696,7 +696,7 @@ def foreign_slug(name):
     return join_slug(x.lower() for x in RE('WS').split(name))
 
 def make_result_foreign(key, slug, title, thumb, lang):
-    slug = '11111' % (FOREIGN_INDEX.index(key), slug)
+    slug = '11111' #% (FOREIGN_INDEX.index(key), slug)
     return [make_result(slug, title, 100, thumb, lang)]
 
 def sluggify_name(name):
