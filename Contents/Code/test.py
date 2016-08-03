@@ -173,5 +173,5 @@ UTESTS  = ['http://www.data18.com/movies/1148631',                       #  0
 
 #SEARCH_TEST(1)
 #UPDATE_TEST(1)
-#FSEARCH_TEST(2)
+FSEARCH_TEST(2)
 #FUPDATE_TEST(2)

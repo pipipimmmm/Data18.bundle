@@ -1191,7 +1191,9 @@ def update_related_movie(metadata, html, smode):
 
 # Foreign site update:
 def update_foreign(metadata, media, lang):
+    Log('update_foreign: %s' % metadata.id)
     parts = metadata.id.split('$', 1)
+    Log(par)
     if len(parts) < 2: return False
 
     key = tuple(parts[0].split('-'))
