@@ -299,7 +299,7 @@ def log_metadata(metadata, header, d18 = True):
     LogList('* Collections:',           metadata.collections)
     LogList('* Genres:',                metadata.genres)
     LogList('* Starring:',              metadata.roles,
-            lambda e: "%s (%s)" % (e.actor, e.photo))
+            lambda e: "%s (%s)" % (e.name, e.photo))
     log_section()
 
 
@@ -737,11 +737,7 @@ def fwhale_update_starring(metadata, root):
     stars = root.xpath('.//h3/following-sibling::p/a/text()')
     if not stars: return
     metadata.roles.clear()
-    for star in stars:
-        role = metadata.roles.new()
-        role.actor = star
-        role.name  = star
-        role.photo = None
+    for star in stars: add_role(metadata, star)
 
 def fwhale_trailer(root):
     return root.xpath("id('main_player')/div/@data-url")[0].strip()
@@ -1097,6 +1093,14 @@ def update_genres(metadata, html, smode):
     for gen in xp(html, gen_xp): metadata.genres.add(normalize_ws(gen))
     Log('Genre Sequence Updated')
 
+def add_role(metadata, actor, photo = None):
+    role       = metadata.roles.new()
+    role.name  = name
+    role.photo = photo
+    try:
+        role.actor = name
+    except: pass
+
 def update_starring(metadata, html, smode):
     starring = xp(html, 'ACTOR_MOVIE' if smode.is_movie() else 'ACTOR_CONTENT')
     if not starring: return False
@@ -1105,10 +1109,7 @@ def update_starring(metadata, html, smode):
     for star in starring:
         name  = normalize_ws(alt_xpath(star, '.'))
         photo = RE('STAR_PIC').sub('/stars/pic/', image_url_xpath(star, '.'))
-        role  = metadata.roles.new()
-        role.actor = name
-        role.name  = name
-        role.photo = photo
+        add_role(metadata, name, photo)
 
     Log('Starring Sequence Updated')
     return True
@@ -1121,12 +1122,7 @@ def update_starring_fb(metadata, html, clear):
         starring = starring.union(xp(html, 'ACTOR_FALLBACK') or [])
     if not starring: return False
 
-    for star in starring:
-        name = normalize_ws(star)
-        role = metadata.roles.new()
-        role.name  = name
-        role.actor = name
-        role.photo = None
+    for star in starring: add_role(metadata, normalize_ws(star))
 
     Log('Starring Sequence Updated')
     return True
