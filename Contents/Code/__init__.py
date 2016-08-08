@@ -316,8 +316,19 @@ def parse_document_studio(node):  return norm_text_xpath(node, 'STUDIO')
 def parse_document_site(node):    return norm_text_xpath(node, 'SITE')
 def parse_document_serie(node):   return norm_text_xpath(node, 'SERIE')
 
+def cleanup_grammar_the(title):
+    if title.count(', The'): return 'The ' + title.replace(', The', '', 1)
+    else: return title
+
+def cleanup_feat_posted(title):
+    fp = RE('FEAT_POSTED').match(title)
+    return fp.group(1) if fp else title
+
+def cleanup_title(title):
+    return cleanup_grammar_the(cleanup_feat_posted(title))
+
 def parse_document_title(html):
-    return normalize_ws(xp(html, 'DOCUMENT_TITLE')[0].strip())
+    return cleanup_title(normalize_ws(xp(html, 'DOCUMENT_TITLE')[0].strip()))
 
 def date_from_string(string):
     try:
@@ -349,9 +360,6 @@ def parse_document_date(html):
         return date_from_string(string.rsplit(':')[-1].strip())
 
 def format_search_title(title, curdate, extras = []):
-    title = cleanup_feat_posted(title)
-    title = cleanup_grammar_the(title)
-
     extra = '/'.join([e for e in extras if e])
     extra = ', '.join([e for e in [str(curdate), extra] if e]).strip()
 
@@ -359,14 +367,6 @@ def format_search_title(title, curdate, extras = []):
         title = title + ' (' + extra + ')'
 
     return title.strip()
-
-def cleanup_grammar_the(title):
-    if title.count(', The'): return 'The ' + title.replace(', The', '', 1)
-    else: return title
-
-def cleanup_feat_posted(title):
-    fp = RE('FEAT_POSTED').match(title)
-    return fp.group(1) if fp else title
 
 # ==============================================================================
 # Searching / Mode:
@@ -463,9 +463,9 @@ def search_fixed(results, test, lang = None):
     network = parse_document_network(html)
     site    = parse_document_site(html)
     title   = parse_document_title(html)
-    title   = format_search_title(title, curdate, [network, site])
+    ftitle  = format_search_title(title, curdate, [network, site])
 
-    Log('search_fixed found: %s' % title)
+    Log('search_fixed found: %s' % ftitle)
 
     # Make sure movie ID is correct, should throw otherwise.
     if smode.is_scene():
@@ -473,7 +473,7 @@ def search_fixed(results, test, lang = None):
         Log('belongs to movie with title:  %s' % movie_title )
 
     # Set the result
-    results.Append(make_result(smode.slug(), title, 100, lang))
+    results.Append(make_result(smode.slug(), ftitle, 100, lang))
     log_section()
     return True
 
@@ -517,7 +517,7 @@ def extract_movie(compare, node, scene_test = None):
     smode   = determine_search_fixed(murl, False)
     date    = date_from_string(string_xpath(node, 'EXTRACT_MOVIE_DATE'))
     thumb   = image_url_xpath(node, 'EXTRACT_MOVIE_THUMB')
-    title   = string_xpath(node,    'EXTRACT_MOVIE_TITLE')
+    title   = cleanup_title(string_xpath(node,    'EXTRACT_MOVIE_TITLE'))
     site    = None
     network = None
     studio  = None
@@ -538,7 +538,7 @@ def extract_content(compare, node):
     murl         = anchor_xpath(node, 'EXTRACT_CONTENT_URL')
     smode        = determine_search_fixed(murl, False)
     date         = date_from_string(string_xpath(node, 'EXTRACT_CONTENT_DATE'))
-    title        = string_xpath(node, 'EXTRACT_CONTENT_TITLE')
+    title        = cleanup_title(string_xpath(node, 'EXTRACT_CONTENT_TITLE'))
     thumb        = image_url_xpath(node, 'EXTRACT_CONTENT_THUMB')
     site         = string_xpath(node, 'EXTRACT_CONTENT_SITE', 'Site')
     network      = string_xpath(node, 'EXTRACT_CONTENT_SITE', 'Network')
@@ -1086,7 +1086,7 @@ def update_images(html, smode, metadata):
 # ==============================================================================
 
 def update_title(metadata, html):
-    metadata.title = cleanup_feat_posted(parse_document_title(html))
+    metadata.title = parse_document_title(html)
     Log('Title Updated')
 
 def update_tagline(metadata, smode):
