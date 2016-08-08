@@ -66,6 +66,7 @@ RE_DYN = {
     # Let's be super fault tolerant in accepted input:
     'FIXED_SEARCH': r'(?:http\:\/\/)?(?:www\.)?(?:data18)?(?:\.com)?\/?' +
                     r'(content|movies?|scenes?)/(\d+)(?:/(\d+))?',
+    'FEAT_POSTED':  r'(.+?)\s+featuring\s+.+?\s+posted.*',
 }
 RE_COM = {}
 def RE(attr):
@@ -304,7 +305,6 @@ def log_metadata(metadata, header, d18 = True):
             lambda e: "%s (%s)" % (e.name, e.photo))
     log_section()
 
-
 # ==============================================================================
 # Request + Parse utilites:
 # ==============================================================================
@@ -349,8 +349,8 @@ def parse_document_date(html):
         return date_from_string(string.rsplit(':')[-1].strip())
 
 def format_search_title(title, curdate, extras = []):
-    if title.count(', The'):
-        title = 'The ' + title.replace(', The', '', 1)
+    title = cleanup_feat_posted(title)
+    title = cleanup_grammar_the(title)
 
     extra = '/'.join([e for e in extras if e])
     extra = ', '.join([e for e in [str(curdate), extra] if e]).strip()
@@ -359,6 +359,14 @@ def format_search_title(title, curdate, extras = []):
         title = title + ' (' + extra + ')'
 
     return title.strip()
+
+def cleanup_grammar_the(title):
+    if title.count(', The'): return 'The ' + title.replace(', The', '', 1)
+    else: return title
+
+def cleanup_feat_posted(title):
+    fp = RE('FEAT_POSTED').match(title)
+    return fp.group(1) if fp else title
 
 # ==============================================================================
 # Searching / Mode:
@@ -1077,6 +1085,10 @@ def update_images(html, smode, metadata):
 # Updating:
 # ==============================================================================
 
+def update_title(metadata, html):
+    metadata.title = cleanup_feat_posted(parse_document_title(html))
+    Log('Title Updated')
+
 def update_tagline(metadata, smode):
     tagline = smode.url()
     if smode.is_scene(): tagline = tagline + ' , ' + smode.scene_mov().url()
@@ -1228,9 +1240,7 @@ def update(metadata, media, lang, force = False):
     smode = update_related_movie(metadata, html, smode)
     shtml = request_data_html(1, smode.sid) if smode.is_scene() else html
 
-    # Title:
-    metadata.title = parse_document_title(html)
-    Log('Title Updated')
+    try_lam2(update_title,           metadata, html)
 
     try_lam2(update_release_date,    metadata, html,  shtml)
 
