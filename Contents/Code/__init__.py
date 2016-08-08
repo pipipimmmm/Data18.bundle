@@ -482,8 +482,9 @@ def search_fixed(results, test, lang = None):
 # ==============================================================================
 
 def make_result(id, name, score, lang, thumb = None):
-    return MetadataSearchResult(id = id, name = name, score = int(round(score)),
-                                lang = lang, thumb = thumb)
+    score = int(round(score))
+    return MetadataSearchResult(id = id, name = name, score = score,
+                                lang = lang)#, thumb = thumb)
 
 def compute_score(compare, title, date):
     # Compute 

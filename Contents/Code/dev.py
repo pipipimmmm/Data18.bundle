@@ -139,7 +139,8 @@ def request_html(url):
 
     return html.document_fromstring(data)
 
-MetadataSearchResult = namedtuple('MetadataSearchResult', ['id', 'name', 'score', 'lang', 'thumb'])
+MetadataSearchResult = namedtuple('MetadataSearchResult',
+    ['id', 'name', 'score', 'lang'])#, 'thumb'])
 
 AG_AG  = namedtuple('AG_AG', ['Movies'])
 Agent  = AG_AG(Movies = object)
